@@ -235,8 +235,10 @@ export default function (pi: ExtensionAPI): void {
 
 	pi.registerMessageRenderer(MESSAGE_TYPE, (message, options, theme) => {
 		const content = typeof message.content === "string" ? message.content : "";
-		const names = [...content.matchAll(/^<referenced-session name="([^"]+)"/gm)].map((match) => match[1]);
-		const header = theme.fg("accent", `↩ referenced sessions: ${names.join(", ") || "(none)"}`);
+		// The digest header is the first line, and session text can forge a later line, so read that line only.
+		const headerLine = content.split("\n", 1)[0] ?? "";
+		const name = headerLine.match(/^<referenced-session name="([^"]+)"/)?.[1];
+		const header = theme.fg("accent", `↩ referenced sessions: ${name ?? "(none)"}`);
 		if (!options.expanded) return new Text(header, options.outputPad, 0);
 		return new Text(`${header}\n${theme.fg("dim", content)}`, options.outputPad, 0);
 	});

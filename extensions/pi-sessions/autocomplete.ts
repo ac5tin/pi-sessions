@@ -74,6 +74,10 @@ export function createSessionAutocompleteProvider(
 		},
 
 		applyCompletion(lines, cursorLine, cursorCol, item, prefix) {
+			// Only tokens we own are handled here. Every other prefix was suggested by the wrapped
+			// provider, and its applyCompletion does work ours does not — notably adding the
+			// leading "/" to a slash command, whose item value has no slash.
+			if (!prefix.startsWith("#")) return current.applyCompletion(lines, cursorLine, cursorCol, item, prefix);
 			const line = lines[cursorLine] ?? "";
 			const before = line.slice(0, cursorCol - prefix.length);
 			// Drop the remainder of the token the user was typing: selecting from the middle of

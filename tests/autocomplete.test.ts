@@ -155,6 +155,38 @@ test("applyCompletion consumes the rest of the token and keeps a separator", () 
 	assert.equal(secondToken.lines[0], "see #a and #feature-db-orm ");
 });
 
+test("applyCompletion delegates every non-# prefix to the wrapped provider", () => {
+	const sentinel = { lines: ["SENTINEL"], cursorLine: 7, cursorCol: 8 };
+	let delegated = 0;
+	const spy: AutocompleteProvider = {
+		async getSuggestions() {
+			return null;
+		},
+		applyCompletion() {
+			delegated++;
+			return sentinel;
+		},
+	};
+	const sessionProvider = createSessionAutocompleteProvider(spy, {
+		sessions: () => all,
+		all: () => all,
+		now: () => 2_000_000,
+	});
+
+	// A slash-command item's value has no leading "/" — only the built-in provider adds it.
+	const slash = sessionProvider.applyCompletion(["/se"], 0, 3, { value: "sessions", label: "sessions" }, "/se");
+	assert.equal(slash, sentinel);
+	assert.equal(delegated, 1);
+
+	const directory = sessionProvider.applyCompletion(["@src"], 0, 4, { value: "src/", label: "src/" }, "@src");
+	assert.equal(directory, sentinel);
+	assert.equal(delegated, 2);
+
+	const hash = sessionProvider.applyCompletion(["#bac"], 0, 4, { value: "#feature-db-orm", label: "feature-db-orm" }, "#bac");
+	assert.equal(delegated, 2, "a # prefix is ours and must not round-trip through the wrapped provider");
+	assert.equal(hash.lines[0], "#feature-db-orm ");
+});
+
 test("a hidden same-slug session forces a repo-qualified token that resolves", async () => {
 	const visible = session({ id: "aaaa1111", name: "fix-auth", cwd: "/repo/backend", messageCount: 12 });
 	const hidden = session({ id: "bbbb2222", name: "fix-auth", cwd: "/repo/frontend", messageCount: 1 });
