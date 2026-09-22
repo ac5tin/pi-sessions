@@ -146,3 +146,11 @@ test("a short number resolves by name and never enters the id branch", () => {
 	assert.equal(hit.kind, "found");
 	assert.equal(hit.kind === "found" && hit.session.path, numericName.path);
 });
+
+test("an empty or whitespace query returns missing instead of matching every name", () => {
+	for (const ref of ["", "   ", "\t"]) {
+		assert.deepEqual(resolveReference(ref, all), { kind: "missing" });
+	}
+	const hit = resolveReference("feature-ui-orm-wire", all);
+	assert.equal(hit.kind, "found");
+});

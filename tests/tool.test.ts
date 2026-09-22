@@ -248,6 +248,43 @@ test("an empty message list is reported, not rendered as a digest", async () => 
 	assert.equal(resultDetails(result).empty, true);
 });
 
+test("a git adapter that throws still returns a digest", async () => {
+	const tool = createSessionReadTool(
+		deps({
+			git: async () => {
+				throw new Error("git exploded");
+			},
+		}),
+	);
+	const result = await tool.execute("id", { ref: "feature-db-orm", mode: "digest" });
+	assert.ok(body(result).includes('<referenced-session name="feature-db-orm"'));
+	assert.equal(resultDetails(result).resolved, true);
+});
+
+test("a summary adapter that throws is reported, not thrown", async () => {
+	const errorTool = createSessionReadTool(
+		deps({
+			summary: async () => {
+				throw new Error("model offline");
+			},
+		}),
+	);
+	const errorResult = await errorTool.execute("id", { ref: "feature-db-orm", mode: "summary" });
+	assert.ok(body(errorResult).includes("Summary unavailable: model offline"));
+	assert.equal(resultDetails(errorResult).error, "model offline");
+
+	const stringTool = createSessionReadTool(
+		deps({
+			summary: async () => {
+				throw "socket closed";
+			},
+		}),
+	);
+	const stringResult = await stringTool.execute("id", { ref: "feature-db-orm", mode: "summary" });
+	assert.ok(body(stringResult).includes("Summary unavailable: socket closed"));
+	assert.equal(resultDetails(stringResult).error, "socket closed");
+});
+
 test("mode output obeys the token budget and the explicit request", async () => {
 	const tool = createSessionReadTool(dialogueDeps());
 	const small = body(await tool.execute("id", { ref: "feature-db-orm", mode: "transcript", maxTokens: 500 }));

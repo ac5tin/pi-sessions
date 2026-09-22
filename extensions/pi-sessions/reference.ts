@@ -47,7 +47,11 @@ function hit(matches: IndexedSession[]): Resolution {
 }
 
 export function resolveReference(ref: string, sessions: IndexedSession[]): Resolution {
-	const query = ref.toLowerCase();
+	// Guard the primitive, not just the tool: an empty or whitespace query makes the fuzzy
+	// filter below use `includes("")`, which matches every named session. A caller that
+	// forgot to check would get a confident wrong answer rather than no answer.
+	const query = ref.trim().toLowerCase();
+	if (!query) return { kind: "missing" };
 
 	if (ID_PREFIX_PATTERN.test(query)) {
 		const byId = hit(sessions.filter((s) => s.id.toLowerCase().startsWith(query)));

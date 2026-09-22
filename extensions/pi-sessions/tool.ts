@@ -124,13 +124,21 @@ export function createSessionReadTool(deps: ToolDeps) {
 				case "transcript":
 					return text(extractTranscript(messages, maxTokens).text, details);
 				case "summary": {
-					const result = await deps.summary(session, messages);
+					let result: SummaryResult;
+					try {
+						result = await deps.summary(session, messages);
+					} catch (error) {
+						return text(`Summary unavailable: ${errorMessage(error)}`, {
+							...details,
+							error: errorMessage(error),
+						});
+					}
 					return "text" in result
 						? text(result.text, { ...details, cached: result.cached })
 						: text(`Summary unavailable: ${result.error}`, { ...details, error: result.error });
 				}
 				default: {
-					const git = await deps.git(session.cwd);
+					const git = await deps.git(session.cwd).catch(() => null);
 					return text(
 						buildDigest(session, messages, { git, summary: null, summaryNote: null }, deps.config, deps.now()),
 						details,
