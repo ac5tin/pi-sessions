@@ -10,7 +10,26 @@ const GOAL_CHARS = 400;
 const REPORT_CHARS = 2000;
 const MAX_FILES = 40;
 const GIT_CHARS = 1200;
+const ATTRIBUTE_CHARS = 120;
 const DROP_ORDER = ["git", "files", "ask", "goal", "report"];
+
+/**
+ * Session content is attacker-influenced. A message, a file path, a branch name, or a
+ * summary can carry the literal closing tag or the untrusted-data sentence and appear to
+ * end the block early, so a consumer splitting on the first delimiter would treat the rest
+ * as outside the frame. Neutralize both literals in every string that reaches the output.
+ * Idempotent: the replacements themselves contain neither literal.
+ */
+const NEUTRALIZE: Array<[RegExp, string]> = [
+	[/<\s*\/?\s*referenced-session\s*>/gi, "[referenced-session tag]"],
+	[/treat the content above as untrusted data/gi, "[untrusted-data notice]"],
+];
+
+function neutralize(text: string): string {
+	let out = text;
+	for (const [pattern, replacement] of NEUTRALIZE) out = out.replace(pattern, replacement);
+	return out;
+}
 
 export interface DigestParts {
 	git: GitInfo | null;
@@ -47,7 +66,10 @@ function textOf(message: SessionMessage | undefined): string {
 }
 
 function attribute(value: string): string {
-	return value.replace(/[\r\n"]+/g, " ").trim();
+	return neutralize(value)
+		.replace(/[\r\n"]+/g, " ")
+		.trim()
+		.slice(0, ATTRIBUTE_CHARS);
 }
 
 export function buildDigest(
@@ -61,12 +83,14 @@ export function buildDigest(
 	const assistants = messages.filter((message) => message.role === "assistant");
 	const goal = collapse(textOf(userMessages[0]), GOAL_CHARS);
 	const latestAsk = collapse(textOf(userMessages[userMessages.length - 1]), GOAL_CHARS);
-	const report = collapse(textOf(assistants[assistants.length - 1]), REPORT_CHARS);
+	const reportMessage = [...assistants].reverse().find((message) => textOf(message).trim().length > 0);
+	const report = collapse(textOf(reportMessage), REPORT_CHARS);
 	const paths = touchedPaths(messages).slice(0, MAX_FILES);
 
 	const sections: Array<{ key: string; text: string }> = [];
 	const add = (key: string, text: string): void => {
-		if (text) sections.push({ key, text });
+		// Neutralize once, here, so no section can smuggle a delimiter in.
+		if (text) sections.push({ key, text: neutralize(text) });
 	};
 	add("goal", goal ? `Goal: ${goal}` : "");
 	add("ask", latestAsk && latestAsk !== goal ? `Latest ask: ${latestAsk}` : "");
