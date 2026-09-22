@@ -1,5 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
+import { Text } from "@earendil-works/pi-tui";
+import { createSessionAutocompleteProvider, formatSessionItem } from "./autocomplete.ts";
 import { cacheDir, loadConfig, sessionsRoot, type Config } from "./config.ts";
 import { buildDigest } from "./digest.ts";
 import { collectGitInfo } from "./git-info.ts";
@@ -78,6 +80,13 @@ export default function (pi: ExtensionAPI): void {
 		store = new SessionStore({ root: sessionsRoot(), extraRoots: config.extraRoots });
 		currentCtx = ctx;
 		void store.refresh();
+		ctx.ui.addAutocompleteProvider((current) =>
+			createSessionAutocompleteProvider(current, {
+				sessions: () =>
+					store.visible(config, { cwd: ctx.cwd, sessionPath: ctx.sessionManager.getSessionFile() }),
+				now: () => Date.now(),
+			}),
+		);
 	});
 
 	pi.on("session_shutdown", async (_event, ctx) => {
@@ -163,5 +172,56 @@ export default function (pi: ExtensionAPI): void {
 				display: true,
 			},
 		};
+	});
+
+	pi.registerCommand("sessions", {
+		description: "Browse pi sessions from every repository and insert a #reference",
+		handler: async (_args, ctx) => {
+			await store.refresh();
+			const sessions = store.visible(config, {
+				cwd: ctx.cwd,
+				sessionPath: ctx.sessionManager.getSessionFile(),
+			});
+			if (sessions.length === 0) {
+				ctx.ui.notify("pi-sessions: no sessions found", "warning");
+				return;
+			}
+			const now = Date.now();
+			const items = sessions.map((session) => {
+				const item = formatSessionItem(session, sessions, now);
+				return { label: `${item.label} — ${item.description}`, session };
+			});
+			const picked = await ctx.ui.select("Insert a session reference", items.map((item) => item.label));
+			if (!picked) return;
+			const chosen = items.find((item) => item.label === picked);
+			if (!chosen) return;
+			const token = referenceToken(chosen.session, sessions);
+			ctx.ui.setEditorText(`${ctx.ui.getEditorText()} ${token}`.trim());
+			ctx.ui.notify(`pi-sessions: inserted ${token}`, "info");
+		},
+	});
+
+	pi.registerCommand("pi-sessions", {
+		description: "Show pi-sessions index statistics and reload config",
+		handler: async (_args, ctx) => {
+			Object.assign(config, loadConfig());
+			const parsed = await store.refresh();
+			const visible = store.visible(config, {
+				cwd: ctx.cwd,
+				sessionPath: ctx.sessionManager.getSessionFile(),
+			});
+			ctx.ui.notify(
+				`pi-sessions: ${store.size} indexed, ${visible.length} visible across ${new Set(visible.map((s) => s.cwd)).size} repos (${parsed} re-parsed)`,
+				"info",
+			);
+		},
+	});
+
+	pi.registerMessageRenderer(MESSAGE_TYPE, (message, options, theme) => {
+		const content = typeof message.content === "string" ? message.content : "";
+		const names = [...content.matchAll(/<referenced-session name="([^"]+)"/g)].map((match) => match[1]);
+		const header = theme.fg("accent", `↩ referenced sessions: ${names.join(", ") || "(none)"}`);
+		if (!options.expanded) return new Text(header, options.outputPad, 0);
+		return new Text(`${header}\n${theme.fg("dim", content)}`, options.outputPad, 0);
 	});
 }

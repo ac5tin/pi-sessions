@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { AutocompleteProvider } from "@earendil-works/pi-tui";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const sessionsDir = join(repoRoot, "tests", "fixtures", "sessions");
@@ -45,6 +46,8 @@ interface Harness {
 	pi: ExtensionAPI;
 	handlers: Map<string, Handler>;
 	tools: Tool[];
+	commands: Array<{ name: string; description?: string }>;
+	renderers: string[];
 	execs: ExecCall[];
 	emit: (type: string, ctx?: ExtensionContext) => Promise<unknown>;
 	prompt: (text: string, ctx?: ExtensionContext) => Promise<unknown>;
@@ -62,6 +65,8 @@ const fakeGit: Exec = async (_command, args) => {
 function harness(exec: Exec = noGit): Harness {
 	const handlers = new Map<string, Handler>();
 	const tools: Tool[] = [];
+	const commands: Harness["commands"] = [];
+	const renderers: string[] = [];
 	const execs: ExecCall[] = [];
 	const pi = {
 		on: (type: string, handler: Handler) => {
@@ -70,6 +75,12 @@ function harness(exec: Exec = noGit): Harness {
 		},
 		registerTool: (tool: Tool) => {
 			tools.push(tool);
+		},
+		registerCommand: (name: string, options: { description?: string }) => {
+			commands.push({ name, ...options });
+		},
+		registerMessageRenderer: (customType: string) => {
+			renderers.push(customType);
 		},
 		exec: async (command: string, args: string[], options?: ExecCall["options"]) => {
 			execs.push({ command, args, options });
@@ -87,6 +98,8 @@ function harness(exec: Exec = noGit): Harness {
 		pi,
 		handlers,
 		tools,
+		commands,
+		renderers,
 		execs,
 		emit: (type, ctx) => Promise.resolve(invoke(type, ctx, { type, prompt: "" })),
 		prompt: (text, ctx) =>
@@ -105,6 +118,7 @@ interface CtxOptions {
 	hasUI?: boolean;
 	model?: { provider: string; id: string };
 	models?: Array<{ provider: string; id: string }>;
+	sessionFile?: string;
 	complete?: (model: unknown, context: unknown, options: unknown) => Promise<unknown>;
 }
 
@@ -112,11 +126,13 @@ interface ApiCtx {
 	ctx: ExtensionContext;
 	statuses: Array<[string, string | undefined]>;
 	calls: Array<{ model: unknown; context: unknown; options: unknown }>;
+	providers: unknown[];
 }
 
 function apiCtx(options: CtxOptions = {}): ApiCtx {
 	const statuses: Array<[string, string | undefined]> = [];
 	const calls: ApiCtx["calls"] = [];
+	const providers: ApiCtx["providers"] = [];
 	const complete =
 		options.complete ?? (async () => ({ role: "assistant", content: [{ type: "text", text: "FAKE" }] }));
 	const ctx = {
@@ -130,13 +146,19 @@ function apiCtx(options: CtxOptions = {}): ApiCtx {
 				return complete(model, context, opts);
 			},
 		},
+		sessionManager: {
+			getSessionFile: () => options.sessionFile,
+		},
 		ui: {
 			setStatus: (key: string, text: string | undefined) => {
 				statuses.push([key, text]);
 			},
+			addAutocompleteProvider: (factory: unknown) => {
+				providers.push(factory);
+			},
 		},
 	};
-	return { ctx: ctx as unknown as ExtensionContext, statuses, calls };
+	return { ctx: ctx as unknown as ExtensionContext, statuses, calls, providers };
 }
 
 function writeConfig(config: Record<string, unknown>): void {
@@ -172,6 +194,45 @@ test("the entry registers the tool and subscribes to the lifecycle events", () =
 	assert.ok(h.handlers.has("session_start"));
 	assert.ok(h.handlers.has("before_agent_start"));
 	assert.ok(h.handlers.has("session_shutdown"));
+});
+
+test("the entry registers the two session commands and the reference renderer", () => {
+	const h = harness();
+	register(h.pi);
+	assert.deepEqual(
+		h.commands.map((command) => command.name),
+		["sessions", "pi-sessions"],
+	);
+	assert.deepEqual(h.renderers, ["pi-sessions-reference"]);
+});
+
+test("session_start registers one autocomplete provider", async () => {
+	const h = harness();
+	register(h.pi);
+	const { ctx, providers } = apiCtx();
+	await h.emit("session_start", ctx);
+	assert.equal(providers.length, 1);
+});
+
+test("the dropdown lists visible sessions only", async () => {
+	const h = harness();
+	register(h.pi);
+	writeConfig({ summaryMode: "off" });
+	const { ctx, providers } = apiCtx();
+	await h.emit("session_start", ctx);
+	await h.prompt("Warm the index with #feature-db-orm", ctx);
+
+	const factory = providers[0] as (current: AutocompleteProvider) => AutocompleteProvider;
+	const provider = factory({
+		getSuggestions: async () => null,
+		applyCompletion: (lines, cursorLine, cursorCol) => ({ lines, cursorLine, cursorCol }),
+	});
+	const suggestions = await provider.getSuggestions(["#"], 0, 1, { signal: new AbortController().signal });
+	const labels = suggestions?.items.map((item) => item.label) ?? [];
+
+	assert.ok(labels.includes("feature-db-orm"), labels.join(","));
+	assert.ok(!labels.includes("throwaway"), labels.join(","));
+	assert.ok(!labels.some((label) => label.includes("general-purpose#")), labels.join(","));
 });
 
 test("a prompt with no reference injects nothing", async () => {
