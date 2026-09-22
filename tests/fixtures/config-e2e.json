@@ -1,0 +1,6 @@
+{
+  "showSubagents": true,
+  "minMessages": 1,
+  "summaryMode": "off",
+  "extraRoots": ["./tests/fixtures/sessions"]
+}
