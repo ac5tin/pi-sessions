@@ -41,7 +41,6 @@ export interface ExecResult {
 export interface ExecOptions {
 	cwd?: string;
 	timeout?: number;
-	env?: Record<string, string>;
 }
 
 export type ExecFn = (command: string, args: string[], options: ExecOptions) => Promise<ExecResult>;

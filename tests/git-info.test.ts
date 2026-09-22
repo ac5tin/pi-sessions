@@ -31,7 +31,7 @@ test("collectGitInfo returns null when git is missing or throws", async () => {
 	assert.equal(await collectGitInfo("/gone", throwing), null);
 });
 
-test("collectGitInfo passes cwd, timeout, and lock-free env to git", async () => {
+test("collectGitInfo passes cwd, timeout, and the lock-free flags on every call", async () => {
 	const calls: Array<{ args: string[] }> = [];
 	let seenOptions: unknown;
 	const exec: ExecFn = async (_command, args, options) => {
@@ -42,9 +42,9 @@ test("collectGitInfo passes cwd, timeout, and lock-free env to git", async () =>
 	await collectGitInfo("/repo/backend", exec);
 	assert.equal((seenOptions as { cwd: string }).cwd, "/repo/backend");
 	assert.equal((seenOptions as { timeout: number }).timeout, GIT_TIMEOUT_MS);
-	assert.equal((seenOptions as { env: Record<string, string> }).env.GIT_OPTIONAL_LOCKS, "0");
-	assert.equal((seenOptions as { env: Record<string, string> }).env.GIT_TERMINAL_PROMPT, "0");
-	assert.equal(calls.some((call) => call.args.includes("--no-pager")), true);
+	assert.equal(calls.length, 4);
+	assert.equal(calls.every((call) => call.args.includes("--no-optional-locks")), true);
+	assert.equal(calls.every((call) => call.args.includes("--no-pager")), true);
 });
 
 test("collectGitInfo keeps partial output when one command fails", async () => {
@@ -64,6 +64,7 @@ test("formatGitSection summarizes status codes and honors the cap", () => {
 
 	const tiny = formatGitSection(git, 20);
 	assert.equal(tiny.length, 20);
+	assert.ok(tiny.startsWith("Changed: 2 M, 1 ??"));
 });
 
 test("formatGitSection returns an empty string for empty input", () => {
