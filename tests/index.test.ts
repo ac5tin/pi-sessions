@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -46,7 +46,11 @@ interface Harness {
 	pi: ExtensionAPI;
 	handlers: Map<string, Handler>;
 	tools: Tool[];
-	commands: Array<{ name: string; description?: string }>;
+	commands: Array<{
+		name: string;
+		description?: string;
+		handler: (args: string, ctx: ExtensionContext) => Promise<void>;
+	}>;
 	renderers: string[];
 	execs: ExecCall[];
 	emit: (type: string, ctx?: ExtensionContext) => Promise<unknown>;
@@ -76,7 +80,10 @@ function harness(exec: Exec = noGit): Harness {
 		registerTool: (tool: Tool) => {
 			tools.push(tool);
 		},
-		registerCommand: (name: string, options: { description?: string }) => {
+		registerCommand: (
+			name: string,
+			options: { description?: string; handler: (args: string, ctx: ExtensionContext) => Promise<void> },
+		) => {
 			commands.push({ name, ...options });
 		},
 		registerMessageRenderer: (customType: string) => {
@@ -119,6 +126,7 @@ interface CtxOptions {
 	model?: { provider: string; id: string };
 	models?: Array<{ provider: string; id: string }>;
 	sessionFile?: string;
+	select?: (title: string, options: string[]) => Promise<string | undefined>;
 	complete?: (model: unknown, context: unknown, options: unknown) => Promise<unknown>;
 }
 
@@ -127,12 +135,14 @@ interface ApiCtx {
 	statuses: Array<[string, string | undefined]>;
 	calls: Array<{ model: unknown; context: unknown; options: unknown }>;
 	providers: unknown[];
+	editor: { text: string };
 }
 
 function apiCtx(options: CtxOptions = {}): ApiCtx {
 	const statuses: Array<[string, string | undefined]> = [];
 	const calls: ApiCtx["calls"] = [];
 	const providers: ApiCtx["providers"] = [];
+	const editor: ApiCtx["editor"] = { text: "" };
 	const complete =
 		options.complete ?? (async () => ({ role: "assistant", content: [{ type: "text", text: "FAKE" }] }));
 	const ctx = {
@@ -156,9 +166,16 @@ function apiCtx(options: CtxOptions = {}): ApiCtx {
 			addAutocompleteProvider: (factory: unknown) => {
 				providers.push(factory);
 			},
+			select: async (title: string, choices: string[]) =>
+				options.select ? options.select(title, choices) : choices[0],
+			notify: () => {},
+			getEditorText: () => editor.text,
+			setEditorText: (text: string) => {
+				editor.text = text;
+			},
 		},
 	};
-	return { ctx: ctx as unknown as ExtensionContext, statuses, calls, providers };
+	return { ctx: ctx as unknown as ExtensionContext, statuses, calls, providers, editor };
 }
 
 function writeConfig(config: Record<string, unknown>): void {
@@ -233,6 +250,43 @@ test("the dropdown lists visible sessions only", async () => {
 	assert.ok(labels.includes("feature-db-orm"), labels.join(","));
 	assert.ok(!labels.includes("throwaway"), labels.join(","));
 	assert.ok(!labels.some((label) => label.includes("general-purpose#")), labels.join(","));
+});
+
+test("the /sessions command inserts a token that resolves despite a hidden collision", async () => {
+	const extraRoot = mkdtempSync(join(tmpdir(), "pi-sessions-extra-"));
+	const hiddenDir = join(extraRoot, "--repo-other--");
+	mkdirSync(hiddenDir, { recursive: true });
+	writeFileSync(
+		join(hiddenDir, "hidden-collision.jsonl"),
+		[
+			JSON.stringify({ type: "session", version: 3, id: "d0d0d0d0-0000-4000-8000-000000000099", cwd: "/repo/other" }),
+			JSON.stringify({ type: "message", id: "aaaaaaaa", parentId: null, message: { role: "user", content: "quick question" } }),
+			JSON.stringify({ type: "session_info", id: "bbbbbbbb", parentId: "aaaaaaaa", name: "feature-db-orm" }),
+		].join("\n") + "\n",
+		"utf8",
+	);
+
+	try {
+		const h = harness();
+		register(h.pi);
+		writeConfig({ summaryMode: "off", extraRoots: [extraRoot] });
+		const { ctx, editor } = apiCtx({
+			select: async (_title, choices) => choices.find((choice) => choice.startsWith("feature-db-orm")),
+		});
+		await h.emit("session_start", ctx);
+
+		const command = h.commands.find((candidate) => candidate.name === "sessions");
+		assert.ok(command);
+		await command.handler("", ctx);
+
+		assert.equal(editor.text, "#backend/feature-db-orm", "a bare #feature-db-orm would resolve ambiguously");
+
+		const digest = injected(await h.prompt(editor.text, ctx));
+		assert.ok(digest.content.includes('name="feature-db-orm"'), digest.content);
+		assert.ok(!digest.content.includes("is ambiguous"), digest.content);
+	} finally {
+		rmSync(extraRoot, { recursive: true, force: true });
+	}
 });
 
 test("a prompt with no reference injects nothing", async () => {

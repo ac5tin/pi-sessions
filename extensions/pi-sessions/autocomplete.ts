@@ -7,7 +7,14 @@ const ACTIVE_WINDOW_MS = 2 * 60 * 1000;
 const TOKEN_PATTERN = /(?:^|[\s(])#([A-Za-z0-9._/-]*)$/;
 
 export interface AutocompleteDeps {
+	/** Sessions offered in the dropdown — already filtered to human sessions. */
 	sessions: () => IndexedSession[];
+	/**
+	 * Every indexed session, used only to decide whether a token needs a repo qualifier.
+	 * This must NOT be the filtered list: a hidden session with the same slug would make the
+	 * short token ambiguous, so the dropdown would hand the user a reference that cannot resolve.
+	 */
+	all: () => IndexedSession[];
 	now: () => number;
 }
 
@@ -48,21 +55,24 @@ export function createSessionAutocompleteProvider(
 			if (!match) return current.getSuggestions(lines, cursorLine, cursorCol, options);
 			if (options.signal.aborted) return current.getSuggestions(lines, cursorLine, cursorCol, options);
 
-			const all = deps.sessions();
-			if (all.length === 0) return current.getSuggestions(lines, cursorLine, cursorCol, options);
+			const pool = deps.sessions();
+			if (pool.length === 0) return current.getSuggestions(lines, cursorLine, cursorCol, options);
+			const universe = deps.all();
 
 			const query = (match[1] ?? "").trim();
 			const now = deps.now();
 			const currentCwd = process.cwd();
-			const ordered = [...all].sort((a, b) => {
+			const ordered = [...pool].sort((a, b) => {
 				const aCurrent = a.cwd === currentCwd ? 1 : 0;
 				const bCurrent = b.cwd === currentCwd ? 1 : 0;
 				if (aCurrent !== bCurrent) return bCurrent - aCurrent;
 				return b.modifiedMs - a.modifiedMs;
 			});
 
-			const pool = query ? fuzzyFilter(ordered, query, (session) => `${session.name ?? ""} ${session.cwd}`) : ordered;
-			const items = pool.slice(0, MAX_ITEMS).map((session) => formatSessionItem(session, all, now));
+			const filtered = query
+				? fuzzyFilter(ordered, query, (session) => `${session.name ?? ""} ${session.cwd}`)
+				: ordered;
+			const items = filtered.slice(0, MAX_ITEMS).map((session) => formatSessionItem(session, universe, now));
 
 			if (items.length === 0) return current.getSuggestions(lines, cursorLine, cursorCol, options);
 			return { prefix: `#${query}`, items };

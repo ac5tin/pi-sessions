@@ -84,6 +84,7 @@ export default function (pi: ExtensionAPI): void {
 			createSessionAutocompleteProvider(current, {
 				sessions: () =>
 					store.visible(config, { cwd: ctx.cwd, sessionPath: ctx.sessionManager.getSessionFile() }),
+				all: () => store.all(),
 				now: () => Date.now(),
 			}),
 		);
@@ -187,15 +188,16 @@ export default function (pi: ExtensionAPI): void {
 				return;
 			}
 			const now = Date.now();
+			const universe = store.all();
 			const items = sessions.map((session) => {
-				const item = formatSessionItem(session, sessions, now);
+				const item = formatSessionItem(session, universe, now);
 				return { label: `${item.label} — ${item.description}`, session };
 			});
 			const picked = await ctx.ui.select("Insert a session reference", items.map((item) => item.label));
 			if (!picked) return;
 			const chosen = items.find((item) => item.label === picked);
 			if (!chosen) return;
-			const token = referenceToken(chosen.session, sessions);
+			const token = referenceToken(chosen.session, universe);
 			ctx.ui.setEditorText(`${ctx.ui.getEditorText()} ${token}`.trim());
 			ctx.ui.notify(`pi-sessions: inserted ${token}`, "info");
 		},

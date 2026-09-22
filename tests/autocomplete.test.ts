@@ -1,7 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import type { AutocompleteProvider } from "@earendil-works/pi-tui";
+import type { AutocompleteItem, AutocompleteProvider } from "@earendil-works/pi-tui";
 import { createSessionAutocompleteProvider, formatSessionItem, relativeLabel } from "../extensions/pi-sessions/autocomplete.ts";
+import { resolveReference } from "../extensions/pi-sessions/reference.ts";
 import type { IndexedSession } from "../extensions/pi-sessions/types.ts";
 
 function session(over: Partial<IndexedSession>): IndexedSession {
@@ -32,8 +33,12 @@ const passthrough: AutocompleteProvider = {
 	},
 };
 
-function provider(sessions = all, nowMs = 2_000_000) {
-	return createSessionAutocompleteProvider(passthrough, { sessions: () => sessions, now: () => nowMs });
+function provider(sessions = all, nowMs = 2_000_000, universe = sessions) {
+	return createSessionAutocompleteProvider(passthrough, {
+		sessions: () => sessions,
+		all: () => universe,
+		now: () => nowMs,
+	});
 }
 
 test("relativeLabel is compact and human readable", () => {
@@ -99,4 +104,38 @@ test("items are capped at twenty", async () => {
 	);
 	const suggestions = await provider(many).getSuggestions(["#"], 0, 1, { signal: new AbortController().signal });
 	assert.equal(suggestions?.items.length, 20);
+});
+
+test("a hidden same-slug session forces a repo-qualified token that resolves", async () => {
+	const visible = session({ id: "aaaa1111", name: "fix-auth", cwd: "/repo/backend", messageCount: 12 });
+	const hidden = session({ id: "bbbb2222", name: "fix-auth", cwd: "/repo/frontend", messageCount: 1 });
+	const universe = [visible, hidden];
+
+	const suggestions = await provider([visible], 2_000_000, universe).getSuggestions(["#fix-auth"], 0, 9, {
+		signal: new AbortController().signal,
+	});
+	assert.ok(suggestions);
+	assert.equal(suggestions.items.length, 1, "the hidden session must not reach the dropdown");
+	const item = suggestions.items[0];
+	assert.ok(item);
+	assert.equal(item.value, "#backend/fix-auth", "a bare #fix-auth would resolve ambiguously against the whole index");
+
+	const resolution = resolveReference(item.value.slice(1), universe);
+	assert.equal(resolution.kind, "found");
+	assert.ok(resolution.kind === "found" && resolution.session.path === visible.path);
+});
+
+test("a collision between two visible sessions still forces repo-qualified tokens", async () => {
+	const first = session({ id: "aaaa1111", name: "fix-auth", cwd: "/repo/backend" });
+	const second = session({ id: "bbbb2222", name: "fix-auth", cwd: "/repo/frontend" });
+	const universe = [first, second];
+
+	const suggestions = await provider(universe, 2_000_000, universe).getSuggestions(["#fix-auth"], 0, 9, {
+		signal: new AbortController().signal,
+	});
+	assert.ok(suggestions);
+	assert.deepEqual(
+		suggestions.items.map((item: AutocompleteItem) => item.value).sort(),
+		["#backend/fix-auth", "#frontend/fix-auth"],
+	);
 });
