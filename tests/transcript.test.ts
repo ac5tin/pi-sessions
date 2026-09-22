@@ -59,6 +59,33 @@ test("fitToTokens keeps the head or the tail and reports truncation", () => {
 	assert.equal(fitToTokens(["a", "b"], 1000, false).truncated, false);
 });
 
+test("fitToTokens slices an oversized line instead of returning nothing", () => {
+	const huge = `HEAD${"M".repeat(392)}TAIL`; // 400 chars, larger than the 40-char budget
+	const head = fitToTokens([huge], 10, false);
+	assert.equal(head.text, `HEAD${"M".repeat(36)}`);
+	assert.equal(head.truncated, true);
+
+	const tail = fitToTokens([huge], 10, true);
+	assert.equal(tail.text, `${"M".repeat(36)}TAIL`);
+	assert.equal(tail.truncated, true);
+
+	assert.deepEqual(fitToTokens([huge], 0, false), { text: "", truncated: true });
+
+	const handoff = extractHandoff([user("old request"), user(huge)], 10);
+	assert.equal(handoff.text, `${"M".repeat(36)}TAIL`);
+	assert.equal(handoff.truncated, true);
+
+	const veryHuge = `HEAD${"M".repeat(4888)}TAIL`; // 4896 chars, larger than the 1600-char budget
+	const relevant = extractRelevant(
+		[user(`postgres ${veryHuge}`), assistant({ type: "text", text: "postgres indexes" })],
+		"postgres",
+		400,
+	);
+	assert.equal(relevant.text.length, 400 * 4);
+	assert.ok(relevant.text.startsWith("user: postgres HEAD"));
+	assert.equal(relevant.truncated, true);
+});
+
 test("extractHandoff keeps the tail, extractTranscript keeps the head", () => {
 	const messages = [
 		user("first request"),

@@ -46,19 +46,30 @@ export interface Extracted {
 	truncated: boolean;
 }
 
+/**
+ * Cut the lines down to a token budget. One oversized line is sliced, not dropped, so a
+ * single message larger than the whole budget still yields bounded text instead of "".
+ */
 export function fitToTokens(lines: string[], maxTokens: number, fromEnd: boolean): Extracted {
 	const budget = Math.max(0, maxTokens) * CHARS_PER_TOKEN;
 	const source = fromEnd ? [...lines].reverse() : lines;
 	const kept: string[] = [];
 	let used = 0;
+	let sliced = false;
 	for (const line of source) {
-		if (used + line.length > budget) break;
+		if (used + line.length > budget) {
+			if (kept.length === 0 && budget > 0) {
+				kept.push(fromEnd ? line.slice(-budget) : line.slice(0, budget));
+				sliced = true;
+			}
+			break;
+		}
 		kept.push(line);
 		used += line.length + 1;
 	}
 	return {
 		text: (fromEnd ? kept.reverse() : kept).join("\n"),
-		truncated: kept.length < lines.length,
+		truncated: sliced || kept.length < lines.length,
 	};
 }
 
@@ -74,7 +85,12 @@ export function extractTranscript(messages: SessionMessage[], maxTokens: number)
 	return fitToTokens(linesOf(messages), maxTokens, false);
 }
 
-/** Lexical scoring only: term overlap. No embeddings; upgrade if recall proves poor. */
+/**
+ * Lexical scoring only: term overlap. No embeddings; upgrade if recall proves poor.
+ * Matching messages are returned in session order, bounded to maxTokens. `truncated`
+ * reports only that matching lines were dropped: non-matching messages are omitted by
+ * design, so `truncated: false` does not mean the view is complete.
+ */
 export function extractRelevant(messages: SessionMessage[], query: string, maxTokens: number): Extracted {
 	const terms = query
 		.toLowerCase()
@@ -83,15 +99,14 @@ export function extractRelevant(messages: SessionMessage[], query: string, maxTo
 	if (terms.length === 0) return extractHandoff(messages, maxTokens);
 
 	const scored = messages
-		.map((message, index) => ({ index, line: renderMessage(message) }))
-		.filter((entry): entry is { index: number; line: string } => entry.line !== null)
+		.map((message) => ({ line: renderMessage(message) }))
+		.filter((entry): entry is { line: string } => entry.line !== null)
 		.map((entry) => {
 			const lower = entry.line.toLowerCase();
 			const score = terms.reduce((total, term) => total + (lower.includes(term) ? 1 : 0), 0);
 			return { ...entry, score };
 		})
-		.filter((entry) => entry.score > 0)
-		.sort((a, b) => a.index - b.index);
+		.filter((entry) => entry.score > 0);
 
 	if (scored.length === 0) return extractHandoff(messages, maxTokens);
 	return fitToTokens(
