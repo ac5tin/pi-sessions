@@ -67,6 +67,39 @@ test("pruning one session keeps a dash-prefixed session's cache file", async (t)
 	assert.equal(await findCachedSummary(dir, "abc-def-1000-2048-m"), "other session");
 });
 
+test("a crafted session id cannot write outside the cache directory", async (t) => {
+	const parent = mkdtempSync(join(tmpdir(), "pi-sessions-parent-"));
+	t.after(() => rmSync(parent, { recursive: true, force: true }));
+	const dir = join(parent, "cache");
+	const crafted = { ...session, id: "../../evil" };
+	const key = summaryCacheKey(crafted, "m");
+	await writeCachedSummary(dir, key, crafted.id, "crafted");
+	assert.deepEqual(readdirSync(dir), [".._.._evil-1000-2048-m.md"]);
+	assert.deepEqual(readdirSync(parent), ["cache"]);
+	assert.ok(!key.includes("/"), `key must carry no path separator: ${key}`);
+});
+
+test("an empty session id prunes its own older keys only", async (t) => {
+	const dir = tempDir();
+	t.after(() => rmSync(dir, { recursive: true, force: true }));
+	await writeCachedSummary(dir, "abc-1000-2048-m", "abc", "abc summary");
+	await writeCachedSummary(dir, "-1000-2048-m", "", "empty older");
+	await writeCachedSummary(dir, "-2000-2048-m", "", "empty newer");
+	assert.deepEqual(readdirSync(dir).sort(), ["-2000-2048-m.md", "abc-1000-2048-m.md"]);
+	assert.equal(await findCachedSummary(dir, "-2000-2048-m"), "empty newer");
+	assert.equal(await findCachedSummary(dir, "abc-1000-2048-m"), "abc summary");
+});
+
+test("a negative mtime still prunes its own older keys", async (t) => {
+	const dir = tempDir();
+	t.after(() => rmSync(dir, { recursive: true, force: true }));
+	const older = { ...session, mtimeMs: -5 };
+	const newer = { ...session, mtimeMs: -4 };
+	await writeCachedSummary(dir, summaryCacheKey(older, "m"), older.id, "past older");
+	await writeCachedSummary(dir, summaryCacheKey(newer, "m"), newer.id, "past newer");
+	assert.deepEqual(readdirSync(dir), [`${summaryCacheKey(newer, "m")}.md`]);
+});
+
 test("a cache hit skips the model call entirely", async (t) => {
 	const dir = tempDir();
 	t.after(() => rmSync(dir, { recursive: true, force: true }));

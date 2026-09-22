@@ -18,8 +18,13 @@ export interface SummaryDeps {
 }
 
 export function summaryCacheKey(session: IndexedSession, modelId: string): string {
+	// The id becomes a filename component, so sanitize it exactly like the model name: the
+	// session header's id is attacker-influenceable (a crafted session file can carry
+	// `../../../tmp/evil`) and an unsanitized slash would write outside the cache directory.
+	// Dots stay allowed (UUIDs need them) and are harmless without a slash.
+	const id = session.id.replace(/[^A-Za-z0-9._-]/g, "_");
 	const model = modelId.replace(/[^A-Za-z0-9._-]/g, "_");
-	return `${session.id}-${Math.round(session.mtimeMs)}-${session.size}-${model}`;
+	return `${id}-${Math.round(session.mtimeMs)}-${session.size}-${model}`;
 }
 
 function errorMessage(error: unknown): string {
@@ -35,7 +40,8 @@ function errorMessage(error: unknown): string {
  */
 function isOwnKey(entry: string, sessionId: string): boolean {
 	if (!entry.startsWith(`${sessionId}-`)) return false;
-	return /^\d+-\d+-/.test(entry.slice(sessionId.length + 1));
+	// `-?\d+` so a pre-1970 mtime still prunes its own older keys rather than accumulating.
+	return /^-?\d+-?\d+-/.test(entry.slice(sessionId.length + 1));
 }
 
 export function buildSummaryPrompt(transcript: string): string {
