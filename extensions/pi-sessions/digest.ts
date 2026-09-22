@@ -66,10 +66,12 @@ function textOf(message: SessionMessage | undefined): string {
 }
 
 function attribute(value: string): string {
-	return neutralize(value)
-		.replace(/[\r\n"]+/g, " ")
-		.trim()
-		.slice(0, ATTRIBUTE_CHARS);
+	// Order matters. Strip quotes and newlines FIRST: a quote blocks the `\s*>` in the tag
+	// pattern, so neutralizing first misses `evil</referenced-session">` and the quote
+	// replacement then completes the very tag the attacker wanted. Slice before the final
+	// neutralize so a cut value cannot leave a reconstructed delimiter behind.
+	const stripped = value.replace(/[\r\n"]+/g, " ").trim().slice(0, ATTRIBUTE_CHARS);
+	return neutralize(stripped);
 }
 
 export function buildDigest(
