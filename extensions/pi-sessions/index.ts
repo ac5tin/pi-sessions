@@ -189,13 +189,27 @@ export default function (pi: ExtensionAPI): void {
 			}
 			const now = Date.now();
 			const universe = store.all();
+			const seen = new Set<string>();
 			const items = sessions.map((session) => {
 				const item = formatSessionItem(session, universe, now);
-				return { label: `${item.label} — ${item.description}`, session };
+				let label = `${item.label} — ${item.description}`;
+				// Two sessions can compose an identical label, and the picker returns the label
+				// string — so the user would get the other session's digest. Add the id prefix only
+				// when it actually collides, to keep the common case readable.
+				if (seen.has(label)) label = `${label} — ${session.id.slice(0, 8)}`;
+				seen.add(label);
+				return { label, session };
 			});
-			const picked = await ctx.ui.select("Insert a session reference", items.map((item) => item.label));
+			const shown = items.slice(0, 50);
+			if (items.length > shown.length) {
+				ctx.ui.notify(
+					`pi-sessions: showing ${shown.length} of ${items.length} sessions — type # in the editor to filter`,
+					"info",
+				);
+			}
+			const picked = await ctx.ui.select("Insert a session reference", shown.map((item) => item.label));
 			if (!picked) return;
-			const chosen = items.find((item) => item.label === picked);
+			const chosen = shown.find((item) => item.label === picked);
 			if (!chosen) return;
 			const token = referenceToken(chosen.session, universe);
 			ctx.ui.setEditorText(`${ctx.ui.getEditorText()} ${token}`.trim());
@@ -221,7 +235,7 @@ export default function (pi: ExtensionAPI): void {
 
 	pi.registerMessageRenderer(MESSAGE_TYPE, (message, options, theme) => {
 		const content = typeof message.content === "string" ? message.content : "";
-		const names = [...content.matchAll(/<referenced-session name="([^"]+)"/g)].map((match) => match[1]);
+		const names = [...content.matchAll(/^<referenced-session name="([^"]+)"/gm)].map((match) => match[1]);
 		const header = theme.fg("accent", `↩ referenced sessions: ${names.join(", ") || "(none)"}`);
 		if (!options.expanded) return new Text(header, options.outputPad, 0);
 		return new Text(`${header}\n${theme.fg("dim", content)}`, options.outputPad, 0);

@@ -133,6 +133,24 @@ test("every referenceToken resolves back to its own session", () => {
 	}
 });
 
+test("a same-repo slug collision falls back to the id instead of an ambiguous repo token", () => {
+	const clone = session({ id: "aaaa1111", name: "fix-auth", cwd: "/repo/backend", modifiedMs: 5000 });
+	const fork = session({ id: "bbbb2222", name: "fix-auth", cwd: "/repo/backend", modifiedMs: 4000 });
+	const sameRepo = [clone, fork];
+
+	for (const source of sameRepo) {
+		const token = referenceToken(source, sameRepo);
+		assert.equal(token, `#${source.id}`, "a repo qualifier cannot disambiguate inside one repo");
+		const hit = resolveReference(token.replace(/^#/, ""), sameRepo);
+		assert.equal(hit.kind, "found");
+		assert.equal(hit.kind === "found" && hit.session.path, source.path);
+	}
+
+	// The same collision across two repos still gets the repo qualifier.
+	const crossRepo = [clone, session({ id: "cccc3333", name: "fix-auth", cwd: "/repo/frontend" })];
+	assert.equal(referenceToken(clone, crossRepo), "#backend/fix-auth");
+});
+
 test("a hex-looking name still resolves by name when no id matches it", () => {
 	const hexName = session({ id: "ffffffff", name: "beef", cwd: "/repo/beef" });
 	const hit = resolveReference("beef", [hexName]);

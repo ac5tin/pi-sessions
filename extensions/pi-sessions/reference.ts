@@ -82,10 +82,15 @@ export function resolveReference(ref: string, sessions: IndexedSession[]): Resol
 	return { kind: "missing" };
 }
 
-/** The token to insert for this session: short form, or repo-qualified on collision. */
+/** The token to insert for this session: short form, repo-qualified across repos, id when nothing else disambiguates. */
 export function referenceToken(session: IndexedSession, sessions: IndexedSession[]): string {
 	const slug = session.name ? slugify(session.name) : session.id;
 	if (!session.name) return `#${slug}`;
-	const collides = sessions.some((s) => s.path !== session.path && s.name && slugify(s.name) === slug);
-	return collides ? `#${repoName(session.cwd)}/${slug}` : `#${slug}`;
+	const sameSlug = sessions.filter((s) => s.path !== session.path && s.name && slugify(s.name) === slug);
+	if (sameSlug.length === 0) return `#${slug}`;
+	// A repo qualifier only disambiguates ACROSS repos. Two sessions in one repo sharing a name
+	// (a clone or fork keeps the name) would both emit #repo/slug, which resolves ambiguously,
+	// so fall back to the id — the id-prefix branch always resolves a unique id.
+	const repo = repoName(session.cwd);
+	return sameSlug.some((s) => repoName(s.cwd) === repo) ? `#${session.id}` : `#${repo}/${slug}`;
 }

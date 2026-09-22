@@ -65,12 +65,15 @@ test("formatSessionItem marks active sessions and names unnamed ones by id", () 
 	assert.equal(unnamed.value, "#dddddddd");
 });
 
-test("a bare # lists every session, current repo first", async () => {
+test("a bare # lists every session in the order the store gives them", async () => {
 	const suggestions = await provider().getSuggestions(["#"], 0, 1, { signal: new AbortController().signal });
 	assert.ok(suggestions);
 	assert.equal(suggestions.prefix, "#");
-	assert.equal(suggestions.items.length, 2);
-	assert.equal(suggestions.items[0]?.label, "feature-ui-orm-wire");
+	assert.deepEqual(
+		suggestions.items.map((item: AutocompleteItem) => item.label),
+		["feature-db-orm", "feature-ui-orm-wire"],
+		"the provider must not re-sort the store's current-repo-first, newest-first order",
+	);
 });
 
 test("typing filters with fuzzy matching and sets the prefix", async () => {
@@ -81,9 +84,37 @@ test("typing filters with fuzzy matching and sets the prefix", async () => {
 	assert.equal(suggestions.items[0]?.value, "#feature-db-orm");
 });
 
-test("no match returns no items so the built-in provider can answer", async () => {
+test("no match returns null so the built-in provider can answer", async () => {
 	const suggestions = await provider().getSuggestions(["#zzzz"], 0, 5, { signal: new AbortController().signal });
-	assert.equal(suggestions?.items.length ?? 0, 0);
+	assert.equal(suggestions, null);
+});
+
+test("an empty session pool defers to the built-in provider", async () => {
+	let delegated = 0;
+	const spy: AutocompleteProvider = {
+		async getSuggestions() {
+			delegated++;
+			return null;
+		},
+		applyCompletion(lines, line, col) {
+			return { lines, cursorLine: line, cursorCol: col };
+		},
+	};
+	const emptyProvider = createSessionAutocompleteProvider(spy, {
+		sessions: () => [],
+		all: () => [],
+		now: () => 2_000_000,
+	});
+	const suggestions = await emptyProvider.getSuggestions(["#"], 0, 1, { signal: new AbortController().signal });
+	assert.equal(suggestions, null, "an empty pool must not open an empty popup");
+	assert.equal(delegated, 1, "file completion must stay alive for a user with no visible sessions");
+});
+
+test("the prefix is the token only, never the leading space or parenthesis", async () => {
+	const spaced = await provider().getSuggestions(["see #db"], 0, 7, { signal: new AbortController().signal });
+	assert.equal(spaced?.prefix, "#db");
+	const parenthesized = await provider().getSuggestions(["see (#db"], 0, 8, { signal: new AbortController().signal });
+	assert.equal(parenthesized?.prefix, "#db");
 });
 
 test("a # that is not at a token boundary defers to the built-in provider", async () => {
@@ -104,6 +135,24 @@ test("items are capped at twenty", async () => {
 	);
 	const suggestions = await provider(many).getSuggestions(["#"], 0, 1, { signal: new AbortController().signal });
 	assert.equal(suggestions?.items.length, 20);
+});
+
+test("applyCompletion consumes the rest of the token and keeps a separator", () => {
+	const sessionProvider = provider();
+	const item = { value: "#feature-db-orm", label: "feature-db-orm" };
+
+	const atEnd = sessionProvider.applyCompletion(["#bac"], 0, 4, item, "#bac");
+	assert.equal(atEnd.lines[0], "#feature-db-orm ");
+	assert.equal(atEnd.cursorCol, "#feature-db-orm ".length);
+
+	const midToken = sessionProvider.applyCompletion(["#baxyz"], 0, 3, item, "#ba");
+	assert.equal(midToken.lines[0], "#feature-db-orm ");
+
+	const beforeParen = sessionProvider.applyCompletion(["see (#bac)"], 0, 9, item, "#bac");
+	assert.equal(beforeParen.lines[0], "see (#feature-db-orm)");
+
+	const secondToken = sessionProvider.applyCompletion(["see #a and #b"], 0, 13, item, "#b");
+	assert.equal(secondToken.lines[0], "see #a and #feature-db-orm ");
 });
 
 test("a hidden same-slug session forces a repo-qualified token that resolves", async () => {

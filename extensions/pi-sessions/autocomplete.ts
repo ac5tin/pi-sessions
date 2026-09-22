@@ -61,17 +61,12 @@ export function createSessionAutocompleteProvider(
 
 			const query = (match[1] ?? "").trim();
 			const now = deps.now();
-			const currentCwd = process.cwd();
-			const ordered = [...pool].sort((a, b) => {
-				const aCurrent = a.cwd === currentCwd ? 1 : 0;
-				const bCurrent = b.cwd === currentCwd ? 1 : 0;
-				if (aCurrent !== bCurrent) return bCurrent - aCurrent;
-				return b.modifiedMs - a.modifiedMs;
-			});
 
+			// The store already orders current-repo-first, newest-first; re-sorting here would
+			// destroy that partition when process.cwd() differs from the session's cwd.
 			const filtered = query
-				? fuzzyFilter(ordered, query, (session) => `${session.name ?? ""} ${session.cwd}`)
-				: ordered;
+				? fuzzyFilter(pool, query, (session) => `${session.name ?? ""} ${session.cwd}`)
+				: pool;
 			const items = filtered.slice(0, MAX_ITEMS).map((session) => formatSessionItem(session, universe, now));
 
 			if (items.length === 0) return current.getSuggestions(lines, cursorLine, cursorCol, options);
@@ -79,7 +74,19 @@ export function createSessionAutocompleteProvider(
 		},
 
 		applyCompletion(lines, cursorLine, cursorCol, item, prefix) {
-			return current.applyCompletion(lines, cursorLine, cursorCol, item, prefix);
+			const line = lines[cursorLine] ?? "";
+			const before = line.slice(0, cursorCol - prefix.length);
+			// Drop the remainder of the token the user was typing: selecting from the middle of
+			// `#ba|xyz` would otherwise glue `xyz` onto the value and produce a dead reference.
+			const after = (line.slice(cursorCol) ?? "").replace(/^[A-Za-z0-9._/-]*/, "");
+			// Keep a separator when the token ends the line, so the next keystroke cannot join it.
+			const inserted = after === "" ? `${item.value} ` : item.value;
+			const next = `${before}${inserted}${after}`;
+			return {
+				lines: [...lines.slice(0, cursorLine), next, ...lines.slice(cursorLine + 1)],
+				cursorLine,
+				cursorCol: before.length + inserted.length,
+			};
 		},
 
 		shouldTriggerFileCompletion(lines, cursorLine, cursorCol) {
