@@ -105,7 +105,17 @@ test("a hanging model hits the timeout and returns an error", async () => {
 		});
 	const started = Date.now();
 	const result = await getSummary(session, messages, { stream, cacheDir: dir, modelId: "m" }, 60);
-	assert.ok("error" in result);
+	assert.deepEqual(result, { error: "summary timed out" });
+	assert.ok(Date.now() - started < 2000);
+	rmSync(dir, { recursive: true, force: true });
+});
+
+test("a stream that ignores the abort still yields the same timeout error", async () => {
+	const dir = tempDir();
+	const stream = (): Promise<string> => new Promise(() => {});
+	const started = Date.now();
+	const result = await getSummary(session, messages, { stream, cacheDir: dir, modelId: "m" }, 60);
+	assert.deepEqual(result, { error: "summary timed out" });
 	assert.ok(Date.now() - started < 2000);
 	rmSync(dir, { recursive: true, force: true });
 });

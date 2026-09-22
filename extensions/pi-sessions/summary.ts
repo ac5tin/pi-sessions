@@ -80,8 +80,10 @@ export async function getSummary(
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	const deadline = new Promise<never>((_resolve, reject) => {
 		timer = setTimeout(() => {
-			controller.abort();
+			// Reject first: a provider that rejects on its own abort listener would otherwise
+			// win the race with its message, making the timeout error provider-dependent.
 			reject(new Error("summary timed out"));
+			controller.abort();
 		}, timeoutMs);
 	});
 
