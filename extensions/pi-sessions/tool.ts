@@ -31,6 +31,10 @@ function isMode(value: string): value is Mode {
 	return (MODES as readonly string[]).includes(value);
 }
 
+function errorMessage(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
+}
+
 export function createSessionReadTool(deps: ToolDeps) {
 	return {
 		name: "session_read",
@@ -49,11 +53,18 @@ export function createSessionReadTool(deps: ToolDeps) {
 				description: "Session reference as written after #: a name, repo/name, or an 8-character id prefix",
 			}),
 			mode: Type.Optional(
-				Type.String({ description: `One of: ${MODES.join(", ")}. Defaults to digest.` }),
+				Type.String({
+					description: `One of: ${MODES.join(", ")}. Defaults to digest. digest omits the LLM handoff summary; use summary to get one.`,
+				}),
 			),
 			query: Type.Optional(Type.String({ description: "Search terms, used by mode=relevant" })),
 			maxTokens: Type.Optional(
-				Type.Integer({ minimum: 500, maximum: 12000, description: "Token budget for the result" }),
+				Type.Integer({
+					minimum: 500,
+					maximum: 12000,
+					description:
+						"Token budget for the handoff, relevant, and transcript views; clamped to the configured maximum. digest and summary ignore it.",
+				}),
 			),
 		}),
 
@@ -64,16 +75,23 @@ export function createSessionReadTool(deps: ToolDeps) {
 				deps.config.maxDigestTokens,
 			);
 
-			const resolution = resolveReference(params.ref, deps.sessions());
+			const ref = params.ref.trim().replace(/^#/, "");
+			if (!ref) {
+				return text("session_read needs a reference: a session name, repo/name, or an id prefix.", { mode, resolved: false });
+			}
+
+			const resolution = resolveReference(ref, deps.sessions());
 			if (resolution.kind === "missing") {
-				return text(`No session matches #${params.ref}.`, { mode, resolved: false });
+				return text(`No session matches #${ref}.`, { mode, resolved: false });
 			}
 			if (resolution.kind === "ambiguous") {
-				const candidates = resolution.candidates
-					.slice(0, 5)
-					.map((session) => `${referenceToken(session, resolution.candidates)} (${session.cwd})`)
-					.join("; ");
-				return text(`#${params.ref} is ambiguous. Candidates: ${candidates}`, {
+				const candidates =
+					resolution.candidates
+						.slice(0, 5)
+						.map((session) => `${referenceToken(session, resolution.candidates)} (${session.cwd})`)
+						.join("; ") +
+					(resolution.candidates.length > 5 ? `; and ${resolution.candidates.length - 5} more` : "");
+				return text(`#${ref} is ambiguous. Candidates: ${candidates}`, {
 					mode,
 					resolved: false,
 					ambiguous: true,
@@ -81,8 +99,22 @@ export function createSessionReadTool(deps: ToolDeps) {
 			}
 
 			const session = resolution.session;
-			const messages = await deps.readMessages(session);
 			const details = { mode, resolved: true, sessionPath: session.path, repo: session.cwd };
+			const token = referenceToken(session, deps.sessions());
+
+			let messages: SessionMessage[];
+			try {
+				messages = await deps.readMessages(session);
+			} catch (error) {
+				return text(`Could not read ${token}: ${errorMessage(error)}`, {
+					...details,
+					resolved: false,
+					error: errorMessage(error),
+				});
+			}
+			if (messages.length === 0) {
+				return text(`${token} has no readable messages; its file may have been removed.`, { ...details, empty: true });
+			}
 
 			switch (mode) {
 				case "handoff":

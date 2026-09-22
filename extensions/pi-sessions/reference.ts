@@ -2,7 +2,13 @@ import type { IndexedSession } from "./types.ts";
 
 /** A #token: letters, digits, dot, underscore, dash, slash. Requires start, space, or "(" before #. */
 const REFERENCE_PATTERN = /(?:^|[\s(])#([A-Za-z0-9._/-]+)/g;
-const ID_PREFIX_PATTERN = /^[0-9a-f]{4,}$/;
+/**
+ * An id prefix: 4+ hex characters, optionally continuing with dash-separated hex groups.
+ * The dash groups matter — a real pi session id is a dashed UUID, and referenceToken emits
+ * the whole id for a session with no name, so a shape that rejected dashes made every
+ * unnamed-session token unresolvable while still looking correct in a note.
+ */
+const ID_PREFIX_PATTERN = /^[0-9a-f]{4,}(-[0-9a-f]+)*$/;
 
 export function slugify(name: string): string {
 	return name.trim().toLowerCase().replace(/[\s/]+/g, "-");

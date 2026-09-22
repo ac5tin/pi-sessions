@@ -101,3 +101,48 @@ test("referenceToken uses repo prefix only when the slug collides", () => {
 	assert.equal(referenceToken(backend, all), "#backend/feature-db-orm");
 	assert.equal(referenceToken(unnamed, all), `#${unnamed.id}`);
 });
+
+test("every referenceToken resolves back to its own session", () => {
+	const named = [backend, frontend];
+	for (const source of named) {
+		const hit = resolveReference(referenceToken(source, named).replace(/^#/, ""), named);
+		assert.equal(hit.kind, "found");
+		assert.equal(hit.kind === "found" && hit.session.path, source.path);
+	}
+
+	// Unnamed sessions emit the whole id, so the id branch must accept a dashed UUID.
+	const unnamedA = session({ id: "abcd1111-0000-4000-8000-000000000001", name: undefined, cwd: "/repo/a" });
+	const unnamedB = session({ id: "abcd2222-0000-4000-8000-000000000002", name: undefined, cwd: "/repo/b" });
+	const unnamedPair = [unnamedA, unnamedB];
+	for (const source of unnamedPair) {
+		const token = referenceToken(source, unnamedPair);
+		assert.equal(token, `#${source.id}`);
+		const hit = resolveReference(token.replace(/^#/, ""), unnamedPair);
+		assert.equal(hit.kind, "found");
+		assert.equal(hit.kind === "found" && hit.session.path, source.path);
+	}
+
+	// Colliding names get the repo qualifier; each token must reach its own repo.
+	const collision = [backend, backendOld];
+	for (const source of collision) {
+		const token = referenceToken(source, collision);
+		assert.ok(token.includes("/"), `${token} should be repo-qualified`);
+		const hit = resolveReference(token.replace(/^#/, ""), collision);
+		assert.equal(hit.kind, "found");
+		assert.equal(hit.kind === "found" && hit.session.path, source.path);
+	}
+});
+
+test("a hex-looking name still resolves by name when no id matches it", () => {
+	const hexName = session({ id: "ffffffff", name: "beef", cwd: "/repo/beef" });
+	const hit = resolveReference("beef", [hexName]);
+	assert.equal(hit.kind, "found");
+	assert.equal(hit.kind === "found" && hit.session.path, hexName.path);
+});
+
+test("a short number resolves by name and never enters the id branch", () => {
+	const numericName = session({ id: "ffffffff", name: "42", cwd: "/repo/numeric" });
+	const hit = resolveReference("42", [numericName]);
+	assert.equal(hit.kind, "found");
+	assert.equal(hit.kind === "found" && hit.session.path, numericName.path);
+});
