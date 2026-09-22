@@ -1,0 +1,6 @@
+{"type":"session","version":3,"id":"e5f6a7b8-0000-4000-8000-000000000004","timestamp":"2026-09-22T13:00:00.000Z","cwd":"/repo/backend"}
+{"type":"message","id":"aaaaaaaa","parentId":null,"timestamp":"2026-09-22T13:00:00.000Z","message":{"role":"user","content":"Review the ORM diff","timestamp":1758546000000}}
+{"type":"session_info","id":"bbbbbbbb","parentId":"aaaaaaaa","timestamp":"2026-09-22T13:00:01.000Z","name":"general-purpose#9b927f29"}
+{"type":"message","id":"cccccccc","parentId":"bbbbbbbb","timestamp":"2026-09-22T13:00:02.000Z","message":{"role":"assistant","content":[{"type":"text","text":"Two issues found."}],"api":"x","provider":"p","model":"m","usage":{},"stopReason":"stop","timestamp":1758546002000}}
+{"type":"message","id":"dddddddd","parentId":"cccccccc","timestamp":"2026-09-22T13:00:03.000Z","message":{"role":"user","content":"fix them","timestamp":1758546003000}}
+{"type":"message","id":"eeeeeeee","parentId":"dddddddd","timestamp":"2026-09-22T13:00:04.000Z","message":{"role":"assistant","content":[{"type":"text","text":"Fixed."}],"api":"x","provider":"p","model":"m","usage":{},"stopReason":"stop","timestamp":1758546004000}}

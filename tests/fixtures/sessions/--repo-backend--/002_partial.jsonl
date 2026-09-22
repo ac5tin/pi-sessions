@@ -1,0 +1,6 @@
+{"type":"session","version":3,"id":"a1b2c3d4-0000-4000-8000-000000000002","timestamp":"2026-09-22T11:00:00.000Z","cwd":"/repo/backend"}
+{"type":"message","id":"aaaaaaaa","parentId":null,"timestamp":"2026-09-22T11:00:00.000Z","message":{"role":"user","content":"Write ORM tests","timestamp":1758536400000}}
+{"type":"message","id":"bbbbbbbb","parentId":"aaaaaaaa","timestamp":"2026-09-22T11:00:01.000Z","message":{"role":"assistant","content":[{"type":"text","text":"Writing tests."}],"api":"x","provider":"p","model":"m","usage":{},"stopReason":"stop","timestamp":1758536401000}}
+{"type":"session_info","id":"cccccccc","parentId":"bbbbbbbb","timestamp":"2026-09-22T11:00:02.000Z","name":"feature-orm-tests"}
+{"type":"message","id":"dddddddd","parentId":"cccccccc","timestamp":"2026-09-22T11:00:03.000Z","message":{"role":"user","content":"more cases","timestamp":1758536403000}}
+{"type":"message","id":"eeeeeeee","parentId":"dddddddd","timestamp":"2026-09-22T11:00:0
