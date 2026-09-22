@@ -49,3 +49,15 @@ test("partial config file merges over defaults", () => {
 	assert.deepEqual(cfg.extraRoots, [dir]);
 	assert.equal(cfg.summaryTimeoutMs, DEFAULT_CONFIG.summaryTimeoutMs);
 });
+
+test("returned configs do not share DEFAULT_CONFIG arrays", () => {
+	assert.notEqual(resolveConfig({}).extraRoots, DEFAULT_CONFIG.extraRoots);
+	assert.notEqual(resolveConfig({}).hidePatterns, DEFAULT_CONFIG.hidePatterns);
+	const mutated = resolveConfig({});
+	mutated.extraRoots.push("/leak");
+	assert.deepEqual(DEFAULT_CONFIG.extraRoots, []);
+	assert.notEqual(
+		loadConfig(join(tmpdir(), "definitely-missing-pi-sessions.json")).hidePatterns,
+		DEFAULT_CONFIG.hidePatterns,
+	);
+});

@@ -51,7 +51,11 @@ export function cacheDir(env: NodeJS.ProcessEnv = process.env): string {
 }
 
 export function resolveConfig(raw: unknown): Config {
-	const cfg: Config = { ...DEFAULT_CONFIG };
+	const cfg: Config = {
+		...DEFAULT_CONFIG,
+		extraRoots: [...DEFAULT_CONFIG.extraRoots],
+		hidePatterns: [...DEFAULT_CONFIG.hidePatterns],
+	};
 	if (!raw || typeof raw !== "object" || Array.isArray(raw)) return cfg;
 	const input = raw as Record<string, unknown>;
 
@@ -74,6 +78,10 @@ export function loadConfig(path: string = configPath()): Config {
 	try {
 		return resolveConfig(JSON.parse(readFileSync(path, "utf8")));
 	} catch {
-		return { ...DEFAULT_CONFIG };
+		return {
+			...DEFAULT_CONFIG,
+			extraRoots: [...DEFAULT_CONFIG.extraRoots],
+			hidePatterns: [...DEFAULT_CONFIG.hidePatterns],
+		};
 	}
 }
