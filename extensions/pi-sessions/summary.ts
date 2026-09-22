@@ -22,6 +22,22 @@ export function summaryCacheKey(session: IndexedSession, modelId: string): strin
 	return `${session.id}-${Math.round(session.mtimeMs)}-${session.size}-${model}`;
 }
 
+function errorMessage(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * A cache file belongs to this session when its name starts with the session id AND the
+ * remainder begins the two numeric fields (mtime, size). The numeric check matters: a plain
+ * prefix match lets the session `abc` delete the cache of a session `abc-def` (callers can
+ * supply custom ids), and a session whose header has no id stores `""`, whose dash prefix
+ * would then match every name beginning with a dash.
+ */
+function isOwnKey(entry: string, sessionId: string): boolean {
+	if (!entry.startsWith(`${sessionId}-`)) return false;
+	return /^\d+-\d+-/.test(entry.slice(sessionId.length + 1));
+}
+
 export function buildSummaryPrompt(transcript: string): string {
 	return [
 		"Summarize this coding session as a handoff to another engineer who must continue the work in a different repository.",
@@ -58,7 +74,7 @@ export async function writeCachedSummary(
 	const entries = await readdir(cacheDir).catch(() => []);
 	await Promise.all(
 		entries
-			.filter((entry) => entry.startsWith(`${sessionId}-`) && entry !== `${key}.md`)
+			.filter((entry) => isOwnKey(entry, sessionId) && entry !== `${key}.md`)
 			.map((entry) => unlink(join(cacheDir, entry)).catch(() => {})),
 	);
 }
@@ -73,7 +89,14 @@ export async function getSummary(
 	const cached = await findCachedSummary(deps.cacheDir, key);
 	if (cached) return { text: cached, cached: true };
 
-	const transcript = transcriptOf(messages);
+	// transcriptOf can throw on a malformed session file (a truthy non-string `text` block),
+	// and this function's contract is that it never throws.
+	let transcript: string;
+	try {
+		transcript = transcriptOf(messages);
+	} catch (error) {
+		return { error: errorMessage(error) };
+	}
 	if (!transcript.trim()) return { error: "referenced session has no readable content" };
 
 	const controller = new AbortController();
@@ -94,7 +117,7 @@ export async function getSummary(
 		await writeCachedSummary(deps.cacheDir, key, session.id, text);
 		return { text, cached: false };
 	} catch (error) {
-		return { error: error instanceof Error ? error.message : String(error) };
+		return { error: errorMessage(error) };
 	} finally {
 		clearTimeout(timer);
 	}

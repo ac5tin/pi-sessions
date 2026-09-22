@@ -45,19 +45,31 @@ test("prompt asks for a handoff and includes the transcript", () => {
 	assert.ok(prompt.includes("user: build the orm"));
 });
 
-test("cache write then read returns the text, and prunes older keys", async () => {
+test("cache write then read returns the text, and prunes older keys", async (t) => {
 	const dir = tempDir();
+	t.after(() => rmSync(dir, { recursive: true, force: true }));
 	await writeCachedSummary(dir, "a1b2c3d4-1000-2048-m1", "a1b2c3d4", "older");
 	await writeCachedSummary(dir, "a1b2c3d4-2000-2048-m1", "a1b2c3d4", "newer");
 	const files = readdirSync(dir);
 	assert.deepEqual(files, ["a1b2c3d4-2000-2048-m1.md"]);
 	assert.equal(await findCachedSummary(dir, "a1b2c3d4-2000-2048-m1"), "newer");
 	assert.equal(await findCachedSummary(dir, "a1b2c3d4-9999-2048-m1"), null);
-	rmSync(dir, { recursive: true, force: true });
 });
 
-test("a cache hit skips the model call entirely", async () => {
+test("pruning one session keeps a dash-prefixed session's cache file", async (t) => {
 	const dir = tempDir();
+	t.after(() => rmSync(dir, { recursive: true, force: true }));
+	await writeCachedSummary(dir, "abc-1000-2048-m", "abc", "abc older");
+	await writeCachedSummary(dir, "abc-def-1000-2048-m", "abc-def", "other session");
+	await writeCachedSummary(dir, "abc-2000-2048-m", "abc", "abc newer");
+	assert.deepEqual(readdirSync(dir).sort(), ["abc-2000-2048-m.md", "abc-def-1000-2048-m.md"]);
+	assert.equal(await findCachedSummary(dir, "abc-2000-2048-m"), "abc newer");
+	assert.equal(await findCachedSummary(dir, "abc-def-1000-2048-m"), "other session");
+});
+
+test("a cache hit skips the model call entirely", async (t) => {
+	const dir = tempDir();
+	t.after(() => rmSync(dir, { recursive: true, force: true }));
 	let calls = 0;
 	const stream = async (): Promise<string> => {
 		calls++;
@@ -68,11 +80,11 @@ test("a cache hit skips the model call entirely", async () => {
 	const result = await getSummary(session, messages, { stream, cacheDir: dir, modelId: "m" }, 1000);
 	assert.deepEqual(result, { text: "from cache", cached: true });
 	assert.equal(calls, 0);
-	rmSync(dir, { recursive: true, force: true });
 });
 
-test("a cache miss calls the model once and caches the result", async () => {
+test("a cache miss calls the model once and caches the result", async (t) => {
 	const dir = tempDir();
+	t.after(() => rmSync(dir, { recursive: true, force: true }));
 	let calls = 0;
 	const stream = async (): Promise<string> => {
 		calls++;
@@ -84,21 +96,21 @@ test("a cache miss calls the model once and caches the result", async () => {
 	const second = await getSummary(session, messages, { stream, cacheDir: dir, modelId: "m" }, 1000);
 	assert.deepEqual(second, { text: "handoff text", cached: true });
 	assert.equal(calls, 1);
-	rmSync(dir, { recursive: true, force: true });
 });
 
-test("a model error returns an error instead of throwing", async () => {
+test("a model error returns an error instead of throwing", async (t) => {
 	const dir = tempDir();
+	t.after(() => rmSync(dir, { recursive: true, force: true }));
 	const stream = async (): Promise<string> => {
 		throw new Error("provider exploded");
 	};
 	const result = await getSummary(session, messages, { stream, cacheDir: dir, modelId: "m" }, 1000);
 	assert.deepEqual(result, { error: "provider exploded" });
-	rmSync(dir, { recursive: true, force: true });
 });
 
-test("a hanging model hits the timeout and returns an error", async () => {
+test("a hanging model hits the timeout and returns an error", async (t) => {
 	const dir = tempDir();
+	t.after(() => rmSync(dir, { recursive: true, force: true }));
 	const stream = (_prompt: string, signal: AbortSignal): Promise<string> =>
 		new Promise((_resolve, reject) => {
 			signal.addEventListener("abort", () => reject(new Error("aborted")));
@@ -107,21 +119,21 @@ test("a hanging model hits the timeout and returns an error", async () => {
 	const result = await getSummary(session, messages, { stream, cacheDir: dir, modelId: "m" }, 60);
 	assert.deepEqual(result, { error: "summary timed out" });
 	assert.ok(Date.now() - started < 2000);
-	rmSync(dir, { recursive: true, force: true });
 });
 
-test("a stream that ignores the abort still yields the same timeout error", async () => {
+test("a stream that ignores the abort still yields the same timeout error", async (t) => {
 	const dir = tempDir();
+	t.after(() => rmSync(dir, { recursive: true, force: true }));
 	const stream = (): Promise<string> => new Promise(() => {});
 	const started = Date.now();
 	const result = await getSummary(session, messages, { stream, cacheDir: dir, modelId: "m" }, 60);
 	assert.deepEqual(result, { error: "summary timed out" });
 	assert.ok(Date.now() - started < 2000);
-	rmSync(dir, { recursive: true, force: true });
 });
 
-test("a session with no readable content returns an error", async () => {
+test("a session with no readable content returns an error", async (t) => {
 	const dir = tempDir();
+	t.after(() => rmSync(dir, { recursive: true, force: true }));
 	const result = await getSummary(
 		session,
 		[{ role: "assistant", content: [{ type: "thinking", thinking: "only thinking" }] }],
@@ -129,5 +141,17 @@ test("a session with no readable content returns an error", async () => {
 		1000,
 	);
 	assert.deepEqual(result, { error: "referenced session has no readable content" });
-	rmSync(dir, { recursive: true, force: true });
+});
+
+test("a malformed message returns an error instead of throwing", async (t) => {
+	const dir = tempDir();
+	t.after(() => rmSync(dir, { recursive: true, force: true }));
+	const malformed = [{ role: "assistant", content: [{ type: "text", text: 42 }] }] as unknown as SessionMessage[];
+	const result = await getSummary(
+		session,
+		malformed,
+		{ stream: async () => "never", cacheDir: dir, modelId: "m" },
+		1000,
+	);
+	assert.ok("error" in result);
 });
