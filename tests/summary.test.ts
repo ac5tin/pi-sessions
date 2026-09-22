@@ -67,14 +67,15 @@ test("pruning one session keeps a dash-prefixed session's cache file", async (t)
 	assert.equal(await findCachedSummary(dir, "abc-def-1000-2048-m"), "other session");
 });
 
-test("a crafted session id cannot write outside the cache directory", async (t) => {
+test("a crafted session id neither escapes nor accumulates in the cache directory", async (t) => {
 	const parent = mkdtempSync(join(tmpdir(), "pi-sessions-parent-"));
 	t.after(() => rmSync(parent, { recursive: true, force: true }));
 	const dir = join(parent, "cache");
 	const crafted = { ...session, id: "../../evil" };
-	const key = summaryCacheKey(crafted, "m");
-	await writeCachedSummary(dir, key, crafted.id, "crafted");
-	assert.deepEqual(readdirSync(dir), [".._.._evil-1000-2048-m.md"]);
+	const key = summaryCacheKey({ ...crafted, mtimeMs: 2000 }, "m");
+	await writeCachedSummary(dir, summaryCacheKey(crafted, "m"), crafted.id, "crafted older");
+	await writeCachedSummary(dir, key, crafted.id, "crafted newer");
+	assert.deepEqual(readdirSync(dir), [".._.._evil-2000-2048-m.md"]);
 	assert.deepEqual(readdirSync(parent), ["cache"]);
 	assert.ok(!key.includes("/"), `key must carry no path separator: ${key}`);
 });
