@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -566,8 +566,8 @@ test("each resolved reference produces exactly one frame", async () => {
 	writeConfig({ summaryMode: "off" });
 	await h.emit("session_start");
 
-	// Two complete session files, never 002_partial: opening that one makes pi repair the
-	// partial trailing line by appending to the file, and a test must not edit a fixture.
+	// Two complete session files, never 002_partial: a fixture must not be the subject of a
+	// read path, and the partial-file case has its own byte-identical test.
 	const content = injected(await h.prompt("Continue #feature-db-orm and #throwaway and #nope", apiCtx().ctx)).content;
 	assert.equal(content.split("<referenced-session ").length - 1, 2, content);
 	assert.equal(content.split("</referenced-session>").length - 1, 2, content);
@@ -657,6 +657,44 @@ test("a single found-but-unreadable reference warns and is not dropped silently"
 		assert.equal(notifications.length, 1, notifications.join(" | "));
 	} finally {
 		rmSync(brokenRoot, { recursive: true, force: true });
+	}
+});
+
+test("reading a partial session file leaves it byte-identical", async () => {
+	const partialRoot = mkdtempSync(join(tmpdir(), "pi-sessions-partial-"));
+	const projectDir = join(partialRoot, "--repo-partial--");
+	mkdirSync(projectDir, { recursive: true });
+	const path = join(projectDir, "partial.jsonl");
+	// A session mid-append: the last line has no newline yet. SessionManager.open repairs a
+	// file like this by appending a newline (session-manager.js loadEntriesFromFile), which
+	// splits the in-flight line of the agent that is still writing it.
+	writeFileSync(
+		path,
+		[
+			JSON.stringify({ type: "session", version: 3, id: "b0b0b0b0-0000-4000-8000-000000000077", cwd: "/repo/partial" }),
+			JSON.stringify({ type: "message", id: "aaaaaaaa", parentId: null, message: { role: "user", content: "still writing" } }),
+			JSON.stringify({ type: "session_info", id: "bbbbbbbb", parentId: "aaaaaaaa", name: "partial-writer" }),
+			'{"type":"message","id":"cccccccc","parentId":"bbbbbbbb","message":{"role":"assistant","content":[{"type":"text","text":"half a li',
+		].join("\n"),
+		"utf8",
+	);
+	const before = readFileSync(path);
+
+	try {
+		const h = harness();
+		register(h.pi);
+		writeConfig({ summaryMode: "off", extraRoots: [partialRoot] });
+		const { ctx } = apiCtx();
+		await h.emit("session_start", ctx);
+
+		const content = injected(await h.prompt("Continue from #partial-writer", ctx)).content;
+		assert.ok(content.includes('name="partial-writer"'), content);
+
+		const after = readFileSync(path);
+		assert.equal(after.length, before.length, `the file grew from ${before.length} to ${after.length} bytes`);
+		assert.ok(after.equals(before), "opening a session mid-append must not modify it");
+	} finally {
+		rmSync(partialRoot, { recursive: true, force: true });
 	}
 });
 

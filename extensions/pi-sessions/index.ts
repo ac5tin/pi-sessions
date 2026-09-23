@@ -1,3 +1,6 @@
+import { mkdtemp, open, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
@@ -44,11 +47,41 @@ const config: Config = loadConfig();
 let currentCtx: ExtensionContext | undefined;
 let store = new SessionStore({ root: sessionsRoot(), extraRoots: config.extraRoots });
 
-async function readMessages(session: IndexedSession): Promise<SessionMessage[]> {
-	const manager = SessionManager.open(session.path);
+/** True when the file's last byte is a newline. One byte, not the whole file. */
+async function endsWithNewline(path: string): Promise<boolean> {
+	const handle = await open(path, "r");
+	try {
+		const { size } = await handle.stat();
+		if (size === 0) return false;
+		const last = Buffer.alloc(1);
+		await handle.read(last, 0, 1, size - 1);
+		return last[0] === 0x0a;
+	} finally {
+		await handle.close();
+	}
+}
+
+function openMessages(path: string): SessionMessage[] {
+	const manager = SessionManager.open(path);
 	// SAFETY: pi's AgentMessage carries the same role/content/toolName shape this module reads;
 	// only the nominal block types differ, and every consumer reads those blocks structurally.
 	return manager.buildSessionContext().messages as unknown as SessionMessage[];
+}
+
+async function readMessages(session: IndexedSession): Promise<SessionMessage[]> {
+	// pi repairs a file whose last line is partial by appending a newline when it opens it
+	// (session-manager.js loadEntriesFromFile). Referencing a session that another agent is
+	// still writing would then split its in-flight line, so open a copy instead. The index
+	// skips files over 50 MB, so the copy is bounded.
+	if (await endsWithNewline(session.path)) return openMessages(session.path);
+	const dir = await mkdtemp(join(tmpdir(), "pi-sessions-open-"));
+	try {
+		const copy = join(dir, "session.jsonl");
+		await writeFile(copy, await readFile(session.path));
+		return openMessages(copy);
+	} finally {
+		await rm(dir, { recursive: true, force: true }).catch(() => {});
+	}
 }
 
 async function summarizeWithModel(
