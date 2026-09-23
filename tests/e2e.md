@@ -16,10 +16,10 @@ pi -e ./extensions/pi-sessions --no-session -p "Reply with only the repo path fr
 
 Expect: the reply contains `/repo/backend`, and the run prints no extension load error.
 
-> Use the same spelling for the fixtures root in `PI_SESSIONS_ROOT` and in the config's
-> `extraRoots`. An absolute path in one and a relative path in the other index every file
-> twice (two cache keys for one file), which makes every reference ambiguous and suppresses
-> injection entirely. The relative form above keeps both roots identical.
+> Roots are deduped by real path: the same directory reached through an absolute path, a
+> relative path, or a symlink is walked once, whichever spelling comes first. The old
+> double-index trap — one file, two cache keys, every reference ambiguous, injection
+> suppressed — is gone; the run below proves it live.
 
 The same from the package manifest instead of the directory:
 
@@ -89,8 +89,9 @@ pi -e ./extensions/pi-sessions --no-session \
 Expect: the reply names both `/repo/a` and `/repo/b` (the injected block carries a
 `#fix-auth is ambiguous. Candidates: …` note) and asks which session was meant.
 
-A lone ambiguous token is deliberately not reported: the same rule that keeps `#42`
-untouched means a prompt whose only reference does not resolve injects nothing.
+A lone ambiguous token injects nothing: the same rule that keeps `#42` untouched means a
+prompt whose only reference does not resolve sends the model nothing to guess from. The
+UI still warns that no session matched, so the dead token is not silent for the user.
 
 ## 4. Live session tolerance
 
@@ -121,3 +122,54 @@ Expect: a status line `summarizing …` while the model works, then a `Handoff:`
 the injected block. Reference the same session again in a second prompt: the summary is
 served from `~/.pi/agent/pi-sessions-cache/` and the block appears without the status
 line.
+
+## 7. Injection proof (recorded 2026-09-23)
+
+Earlier smoke runs did not prove that the digest reached the model: the double-index bug
+made every reference ambiguous and the answers came from a `session_read` tool call.
+These checks use `--no-tools`, which removes `session_read` and `read`, so the answer can
+only come from the injected digest.
+
+```bash
+TMP=$(mktemp -d)
+printf '{"summaryMode":"off"}' > "$TMP/config.json"
+
+# 1. Discriminating run
+PI_SESSIONS_ROOT="$PWD/tests/fixtures/sessions" PI_SESSIONS_CONFIG="$TMP/config.json" \
+pi -e ./extensions/pi-sessions --no-session --no-tools \
+  -p "Reply with only the repo path from #feature-db-orm"
+# observed stdout: /repo/backend
+
+# 2. Persistence assertion: same run, session saved
+PI_SESSIONS_ROOT="$PWD/tests/fixtures/sessions" PI_SESSIONS_CONFIG="$TMP/config.json" \
+pi -e ./extensions/pi-sessions --session-dir "$TMP/ref" --no-tools \
+  -p "Reply with only the repo path from #feature-db-orm"
+# observed stdout: /repo/backend
+# observed in "$TMP/ref"/*.jsonl, one entry:
+#   type=custom_message  customType=pi-sessions-reference  display=true
+#   content starts with '<referenced-session name="feature-db-orm"',
+#   contains repo="/repo/backend", ends with the untrusted-data line
+
+# 3. Control: an issue number injects nothing
+PI_SESSIONS_ROOT="$PWD/tests/fixtures/sessions" PI_SESSIONS_CONFIG="$TMP/config.json" \
+pi -e ./extensions/pi-sessions --session-dir "$TMP/ctl" --no-tools \
+  -p "Reply with only the number in issue #42"
+# observed stdout: 42
+# observed: no pi-sessions-reference entry anywhere under "$TMP/ctl"
+
+# 4. Frame count: one closing frame per reference
+REF=$(find "$TMP/ref" -name '*.jsonl')
+grep -o '</referenced-session>' "$REF" | wc -l
+# observed: 1
+```
+
+The overlapping-roots spelling from section 1 is safe now, because roots are deduped by
+real path. With the absolute root plus the config's relative `extraRoots`:
+
+```bash
+PI_SESSIONS_ROOT="$PWD/tests/fixtures/sessions" \
+PI_SESSIONS_CONFIG="$PWD/tests/fixtures/config-e2e.json" \
+pi -e ./extensions/pi-sessions --no-session --no-tools \
+  -p "Reply with only the repo path from #feature-db-orm"
+# observed stdout: /repo/backend
+```

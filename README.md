@@ -39,7 +39,8 @@ pi -e .   # from the repo root; loads the package manifest
 
 A reference starts at the beginning of a line or after a space or `(`, so a `#` inside
 a word (`issue#42`) is never a reference. Each prompt injects at most `maxReferences`
-references (default 3); any further references are ignored.
+references (default 3); anything past the cap is reported in a note beside the digest,
+never dropped silently.
 
 | Form | Example | Matches |
 | --- | --- | --- |
@@ -51,9 +52,11 @@ Resolution order: id prefix, then `repo/name`, then exact name, then a name-subs
 fallback. Unnamed sessions resolve only by id.
 
 The extension never guesses. When several sessions match and the prompt also contains at
-least one resolvable reference, the injected block lists the candidates and asks which
-one was meant. A token that matches nothing is ordinary text, so `#42` stays an issue
-number. If no reference in the prompt resolves, nothing is injected at all.
+least one resolvable reference, the injected block states the ambiguity and lists the
+candidates; it never picks one. A token that matches nothing is ordinary text, so `#42`
+stays an issue number. If no reference in the prompt resolves, nothing is injected at
+all — but a token that looks like a session reference (it contains `-` or `/`) raises a
+warning in the UI, so a dead root or a bad token is visible instead of silent.
 
 ### The `#` dropdown
 
@@ -108,8 +111,10 @@ Sections appear only when they have data:
 | `Git` | Change counts, `diff --stat HEAD`, `log -3 --oneline`; read-only commands with a 5 s timeout, skipped when the cwd is not a git repository. |
 
 Budgets: `digestTokens` (default 6000) per block, hard-capped at `maxDigestTokens`
-(default 12000). When a block is over budget, sections drop in the order git, files,
-latest ask, goal, final report. The header and the untrusted-data line always stay.
+(default 12000). A prompt can carry up to `maxReferences` blocks, so the real injected
+budget is `digestTokens × maxReferences` — 6000 × 3 = 18,000 tokens by default — plus the
+notes. When a block is over budget, sections drop in the order git, files, latest ask,
+goal, final report. The header and the untrusted-data line always stay.
 
 The header attributes and every section body are neutralized, so a session cannot forge
 `</referenced-session>` or the untrusted-data sentence to escape the frame.
@@ -118,7 +123,9 @@ The header attributes and every section body are neutralized, so a session canno
 
 With `summaryMode: "blocking"` (the default), each resolved session's transcript (up to
 80,000 characters; thinking blocks dropped, tool input/output previewed) is sent to the
-current model, or to `summaryModel` when set, before the agent starts. A status line
+current model, or to `summaryModel` when set, before the agent starts. The turn waits for
+these calls: with several references they run in parallel, each beside its git probe, and
+each is bounded by `summaryTimeoutMs` (default 120 s). A status line
 `summarizing <session>…` shows while it works. The answer is written to
 `~/.pi/agent/pi-sessions-cache/`, keyed by session id, file size and mtime, and model,
 so a second reference to the same session is instant. `summaryTimeoutMs` (default 120 s)
@@ -134,14 +141,15 @@ The always-on `session_read` tool reads a session on demand, with five modes:
 | --- | --- |
 | `digest` (default) | The block above, without the handoff summary. |
 | `handoff` | Tail of the transcript, fitted to the token budget. |
-| `relevant` | Messages matching `query` by term overlap. Lexical only — no embeddings. |
+| `relevant` | Messages matching `query` by term overlap. Lexical only — no embeddings. Falls back to the handoff tail when the query has no term longer than two characters, or when nothing matches. |
 | `transcript` | Transcript from the start, fitted to the token budget. |
 | `summary` | The cached or freshly generated handoff summary. |
 
 Parameters: `ref` (required), `mode`, `query` (used by `relevant`), and `maxTokens`
 (500–12000; defaults to `digestTokens` and is clamped to `maxDigestTokens`; `digest` and
-`summary` ignore it). The tool is read-only and treats other sessions' content as
-untrusted data.
+`summary` ignore it). Every result starts with `session:` and `repo:` lines naming the
+session file and its repository, so follow-up reads can use pi's normal tools. The tool
+is read-only and treats other sessions' content as untrusted data.
 
 Subagent sessions stay readable here by id even though the dropdown hides them.
 
@@ -183,7 +191,7 @@ re-read by `/pi-sessions`.
 | `summaryMode` | `"blocking"` | `"blocking"` generates a handoff summary before the turn; `"off"` skips it. |
 | `summaryTimeoutMs` | `120000` | Timeout for one summary, in milliseconds. |
 | `summaryModel` | `null` | `"provider/model-id"` for summaries; `null` uses the current model. Falls back to the current model when the named model is unavailable. |
-| `extraRoots` | `[]` | Additional directories to index alongside `~/.pi/agent/sessions`. |
+| `extraRoots` | `[]` | Additional session roots, each in the `root/<project-dir>/<file>.jsonl` layout used by `~/.pi/agent/sessions`. A relative path resolves against the directory pi runs in; a leading `~` or `~/` expands to the home directory. Roots that resolve to the same real directory are walked once, keeping the first spelling. |
 | `hidePatterns` | `[]` | Case-insensitive substrings; named sessions containing one are hidden from the dropdown. |
 
 Two environment variables override paths, mainly for tests:
@@ -193,7 +201,7 @@ path. The summary cache always lives in `~/.pi/agent/pi-sessions-cache/`.
 ## Limits
 
 - 6000 tokens per digest, 12000 hard maximum.
-- 3 references per prompt.
+- 3 references per prompt: 18,000 tokens worst case per turn.
 - Session files larger than 50 MB are skipped.
 - 120 s summary timeout; summary input 80,000 characters, output 4,000 characters.
 
