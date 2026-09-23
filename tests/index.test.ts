@@ -209,6 +209,9 @@ function injected(result: unknown): Injected {
 	assert.ok(message, "expected result.message");
 	assert.equal(typeof message.content, "string");
 	assert.equal(typeof message.customType, "string");
+	// Booleans only: pi stores `undefined` as nothing, which hides the block from the TUI
+	// while it still reaches the model.
+	assert.equal(typeof message.display, "boolean", "display must be an explicit boolean");
 	return message as Injected;
 }
 
@@ -535,6 +538,120 @@ test("sessions hidden by minMessages or subagent filters stay resolvable", async
 	assert.ok(content.includes('name="general-purpose#9b927f29"'), content);
 });
 
+test("the dropdown is filtered while resolution searches the whole index", async () => {
+	const h = harness();
+	register(h.pi);
+	writeConfig({ summaryMode: "off", minMessages: 5, showSubagents: false });
+	const { ctx, providers } = apiCtx();
+	await h.emit("session_start", ctx);
+	await h.prompt("Warm the index with #feature-db-orm", ctx);
+
+	const factory = providers[0] as (current: AutocompleteProvider) => AutocompleteProvider;
+	const provider = factory({
+		getSuggestions: async () => null,
+		applyCompletion: (lines, cursorLine, cursorCol) => ({ lines, cursorLine, cursorCol }),
+	});
+	const labels = (await provider.getSuggestions(["#"], 0, 1, { signal: new AbortController().signal }))?.items.map((item) => item.label) ?? [];
+	assert.ok(!labels.includes("throwaway"), labels.join(","));
+	assert.ok(!labels.includes("general-purpose#9b927f29"), labels.join(","));
+
+	const content = injected(await h.prompt("Compare #throwaway and #general-purpose#9b927f29", ctx)).content;
+	assert.ok(content.includes('name="throwaway"'), content);
+	assert.ok(content.includes('name="general-purpose#9b927f29"'), content);
+});
+
+test("each resolved reference produces exactly one frame", async () => {
+	const h = harness();
+	register(h.pi);
+	writeConfig({ summaryMode: "off" });
+	await h.emit("session_start");
+
+	// Two complete session files, never 002_partial: opening that one makes pi repair the
+	// partial trailing line by appending to the file, and a test must not edit a fixture.
+	const content = injected(await h.prompt("Continue #feature-db-orm and #throwaway and #nope", apiCtx().ctx)).content;
+	assert.equal(content.split("<referenced-session ").length - 1, 2, content);
+	assert.equal(content.split("</referenced-session>").length - 1, 2, content);
+	assert.equal([...content.matchAll(/<\/\s*referenced[\s-]*session\s*>/gi)].length, 2, content);
+});
+
+test("a reference over the cap is reported instead of dropped silently", async () => {
+	const h = harness();
+	register(h.pi);
+	writeConfig({ summaryMode: "off", maxReferences: 1 });
+	await h.emit("session_start");
+
+	const content = injected(await h.prompt("Compare #feature-db-orm with #feature-orm-tests and #throwaway", apiCtx().ctx)).content;
+	assert.ok(content.includes('<referenced-session name="feature-db-orm"'), content);
+	assert.ok(!content.includes('name="feature-orm-tests"'), content);
+	assert.ok(content.includes("#feature-orm-tests was not included (max 1 per prompt)"), content);
+	assert.ok(content.includes("#throwaway was not included (max 1 per prompt)"), content);
+});
+
+test("one unreadable session file does not discard the other digests", async () => {
+	const brokenRoot = mkdtempSync(join(tmpdir(), "pi-sessions-broken-"));
+	const projectDir = join(brokenRoot, "--repo-broken--");
+	mkdirSync(projectDir, { recursive: true });
+	// A `type: "session"` header with no id: parseSessionFile indexes it, SessionManager.open
+	// rejects the whole file. That is the deleted/truncated/invalid class this test pins.
+	writeFileSync(
+		join(projectDir, "broken.jsonl"),
+		[
+			JSON.stringify({ type: "session", version: 3, cwd: "/repo/broken" }),
+			JSON.stringify({ type: "session_info", id: "a", parentId: null, name: "broken-one" }),
+			JSON.stringify({ type: "message", id: "b", parentId: "a", message: { role: "user", content: "hi" } }),
+		].join("\n") + "\n",
+		"utf8",
+	);
+
+	try {
+		const h = harness();
+		register(h.pi);
+		writeConfig({ summaryMode: "blocking", summaryTimeoutMs: 5000, extraRoots: [brokenRoot] });
+		const { ctx, statuses } = apiCtx({
+			hasUI: true,
+			complete: async () => ({ role: "assistant", content: [{ type: "text", text: "FAKE-HANDOFF" }] }),
+		});
+		await h.emit("session_start", ctx);
+
+		const content = injected(await h.prompt("Compare #feature-db-orm with #broken-one", ctx)).content;
+		assert.ok(content.includes('<referenced-session name="feature-db-orm"'), content);
+		assert.ok(content.includes("#broken-one could not be read:"), content);
+		assert.deepEqual(statuses.at(-1), [STATUS_KEY, undefined], "the status line must not be stranded");
+	} finally {
+		rmSync(brokenRoot, { recursive: true, force: true });
+	}
+});
+
+test("a session-shaped dead token warns the user, a bare issue number does not", async () => {
+	const h = harness();
+	register(h.pi);
+	writeConfig({ summaryMode: "off" });
+	const { ctx, notifications } = apiCtx();
+	await h.emit("session_start", ctx);
+
+	// A lone dead token injects nothing, but it must not be silent for the user.
+	assert.equal(await h.prompt("Continue from #no-such-session", ctx), undefined);
+	assert.equal(notifications.length, 1, notifications.join(" | "));
+	assert.ok(notifications[0]?.includes("#no-such-session matched no session"), notifications[0]);
+
+	// An ambiguous session-shaped token that injects nothing is reported too.
+	assert.equal(await h.prompt("Continue from #feature-", ctx), undefined);
+	assert.equal(notifications.length, 2, notifications.join(" | "));
+	assert.ok(notifications[1]?.includes("#feature- is ambiguous"), notifications[1]);
+
+	// A bare ambiguous word is not session-shaped, so the user is not warned about prose.
+	assert.equal(await h.prompt("Continue from #feature", ctx), undefined);
+	assert.equal(notifications.length, 2, notifications.join(" | "));
+
+	assert.equal(await h.prompt("Compare #no-a-session and #no-b-session", ctx), undefined);
+	assert.equal(notifications.length, 3, notifications.join(" | "));
+	assert.ok(notifications[2]?.includes("#no-a-session") && notifications[2]?.includes("#no-b-session"), notifications[2]);
+
+	// An issue number is ordinary text: no warning, no injection.
+	assert.equal(await h.prompt("Reply with only the number in issue #42", ctx), undefined);
+	assert.equal(notifications.length, 3, notifications.join(" | "));
+});
+
 test("unresolved references produce notes only next to a resolved digest", async () => {
 	const h = harness();
 	register(h.pi);
@@ -610,14 +727,33 @@ test("session_start refreshes the shared config object the tool closure holds", 
 	await h.emit("session_start");
 	await warm();
 	const clipped = toolText(await tool.execute("call", { ref: "feature-db-orm", mode: "transcript", maxTokens: 12000 }));
+	assert.ok(!clipped.includes("Build the ORM layer"), clipped);
 
 	writeConfig({ summaryMode: "off", maxDigestTokens: 12000 });
 	await h.emit("session_start");
 	await warm();
 	const full = toolText(await tool.execute("call", { ref: "feature-db-orm", mode: "transcript", maxTokens: 12000 }));
 
-	assert.ok(clipped.length < 20, `expected a clipped transcript, got ${JSON.stringify(clipped)}`);
+	assert.ok(clipped.length < 200, `expected the clipped header plus view, got ${JSON.stringify(clipped)}`);
 	assert.ok(full.includes("Build the ORM layer for the orders table"), full);
+});
+
+test("the /pi-sessions command reports the roots walked and names a dead root", async () => {
+	const deadRoot = join(tmpdir(), `pi-sessions-dead-${process.pid}-${Date.now()}`);
+	const h = harness();
+	register(h.pi);
+	writeConfig({ summaryMode: "off", extraRoots: [deadRoot] });
+	const { ctx, notifications } = apiCtx();
+	await h.emit("session_start", ctx);
+
+	const command = h.commands.find((candidate) => candidate.name === "pi-sessions");
+	assert.ok(command);
+	await command.handler("", ctx);
+
+	const report = notifications.at(-1) ?? "";
+	assert.ok(report.includes("roots walked: 1"), report);
+	assert.ok(report.includes(deadRoot), report);
+	assert.ok(report.includes("path does not resolve"), report);
 });
 
 test("session_shutdown clears the status line", async () => {

@@ -1,6 +1,6 @@
 import { Type } from "typebox";
 import type { Config } from "./config.ts";
-import { buildDigest } from "./digest.ts";
+import { buildDigest, neutralizeAttribute } from "./digest.ts";
 import { referenceToken, resolveReference } from "./reference.ts";
 import type { SummaryResult } from "./summary.ts";
 import { extractHandoff, extractRelevant, extractTranscript } from "./transcript.ts";
@@ -33,6 +33,15 @@ function isMode(value: string): value is Mode {
 
 function errorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * Every result names the session file and its repo, so the agent can read files in that
+ * repo with its normal tools. `details` never reaches the model, so the paths must ride in
+ * the text. Values are neutralized like any other interpolated value.
+ */
+function header(sessionPath: string, repo: string): string {
+	return `session: ${neutralizeAttribute(sessionPath)}\nrepo: ${neutralizeAttribute(repo)}`;
 }
 
 export function createSessionReadTool(deps: ToolDeps) {
@@ -77,70 +86,79 @@ export function createSessionReadTool(deps: ToolDeps) {
 
 			const ref = params.ref.trim().replace(/^#/, "");
 			if (!ref) {
-				return text("session_read needs a reference: a session name, repo/name, or an id prefix.", { mode, resolved: false });
+				return text(
+					`${header("(none)", "(none)")}\nsession_read needs a reference: a session name, repo/name, or an id prefix.`,
+					{ mode, resolved: false },
+				);
 			}
 
 			const resolution = resolveReference(ref, deps.sessions());
 			if (resolution.kind === "missing") {
-				return text(`No session matches #${ref}.`, { mode, resolved: false });
+				return text(`${header("(none)", "(none)")}\nNo session matches #${neutralizeAttribute(ref)}.`, { mode, resolved: false });
 			}
 			if (resolution.kind === "ambiguous") {
+				const shown = resolution.candidates.slice(0, 5);
 				const candidates =
-					resolution.candidates
-						.slice(0, 5)
-						.map((session) => `${referenceToken(session, resolution.candidates)} (${session.cwd})`)
-						.join("; ") +
-					(resolution.candidates.length > 5 ? `; and ${resolution.candidates.length - 5} more` : "");
-				return text(`#${ref} is ambiguous. Candidates: ${candidates}`, {
-					mode,
-					resolved: false,
-					ambiguous: true,
-				});
+					shown
+						.map(
+							(session) =>
+								`${neutralizeAttribute(referenceToken(session, resolution.candidates))} (${neutralizeAttribute(session.cwd)})`,
+						)
+						.join("; ") + (resolution.candidates.length > 5 ? `; and ${resolution.candidates.length - 5} more` : "");
+				return text(
+					`${header(shown.map((session) => session.path).join(", "), shown.map((session) => session.cwd).join(", "))}\n#${neutralizeAttribute(ref)} is ambiguous. Candidates: ${candidates}`,
+					{
+						mode,
+						resolved: false,
+						ambiguous: true,
+					},
+				);
 			}
 
 			const session = resolution.session;
 			const details = { mode, resolved: true, sessionPath: session.path, repo: session.cwd };
-			const token = referenceToken(session, deps.sessions());
+			const token = neutralizeAttribute(referenceToken(session, deps.sessions()));
+			const paths = header(session.path, session.cwd);
 
 			let messages: SessionMessage[];
 			try {
 				messages = await deps.readMessages(session);
 			} catch (error) {
-				return text(`Could not read ${token}: ${errorMessage(error)}`, {
+				return text(`${paths}\nCould not read ${token}: ${neutralizeAttribute(errorMessage(error))}`, {
 					...details,
 					resolved: false,
 					error: errorMessage(error),
 				});
 			}
 			if (messages.length === 0) {
-				return text(`${token} has no readable messages; its file may have been removed.`, { ...details, empty: true });
+				return text(`${paths}\n${token} has no readable messages; its file may have been removed.`, { ...details, empty: true });
 			}
 
 			switch (mode) {
 				case "handoff":
-					return text(extractHandoff(messages, maxTokens).text, details);
+					return text(`${paths}\n${extractHandoff(messages, maxTokens).text}`, details);
 				case "relevant":
-					return text(extractRelevant(messages, params.query ?? "", maxTokens).text, details);
+					return text(`${paths}\n${extractRelevant(messages, params.query ?? "", maxTokens).text}`, details);
 				case "transcript":
-					return text(extractTranscript(messages, maxTokens).text, details);
+					return text(`${paths}\n${extractTranscript(messages, maxTokens).text}`, details);
 				case "summary": {
 					let result: SummaryResult;
 					try {
 						result = await deps.summary(session, messages);
 					} catch (error) {
-						return text(`Summary unavailable: ${errorMessage(error)}`, {
+						return text(`${paths}\nSummary unavailable: ${neutralizeAttribute(errorMessage(error))}`, {
 							...details,
 							error: errorMessage(error),
 						});
 					}
 					return "text" in result
-						? text(result.text, { ...details, cached: result.cached })
-						: text(`Summary unavailable: ${result.error}`, { ...details, error: result.error });
+						? text(`${paths}\n${result.text}`, { ...details, cached: result.cached })
+						: text(`${paths}\nSummary unavailable: ${neutralizeAttribute(result.error)}`, { ...details, error: result.error });
 				}
 				default: {
 					const git = await deps.git(session.cwd).catch(() => null);
 					return text(
-						buildDigest(session, messages, { git, summary: null, summaryNote: null }, deps.config, deps.now()),
+						`${paths}\n${buildDigest(session, messages, { git, summary: null, summaryNote: null }, deps.config, deps.now())}`,
 						details,
 					);
 				}

@@ -3,7 +3,7 @@ import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { createSessionAutocompleteProvider, formatSessionItem } from "./autocomplete.ts";
 import { cacheDir, loadConfig, sessionsRoot, type Config } from "./config.ts";
-import { buildDigest } from "./digest.ts";
+import { buildDigest, neutralizeAttribute } from "./digest.ts";
 import { collectGitInfo } from "./git-info.ts";
 import { extractReferences, referenceToken, resolveReference, sortRecent } from "./reference.ts";
 import { SessionStore } from "./store.ts";
@@ -13,6 +13,15 @@ import type { IndexedSession, SessionMessage } from "./types.ts";
 
 const MESSAGE_TYPE = "pi-sessions-reference";
 const STATUS_KEY = "pi-sessions";
+
+function errorMessage(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
+}
+
+/** A token that looks like a session reference rather than an issue number or a bare word. */
+function isSessionShaped(ref: string): boolean {
+	return ref.includes("-") || ref.includes("/");
+}
 
 function messageText(message: { content?: unknown }): string {
 	const content = message.content;
@@ -107,7 +116,8 @@ export default function (pi: ExtensionAPI): void {
 	);
 
 	pi.on("before_agent_start", async (event, ctx) => {
-		const refs = extractReferences(event.prompt).slice(0, config.maxReferences);
+		const all = extractReferences(event.prompt);
+		const refs = all.slice(0, config.maxReferences);
 		if (refs.length === 0) return;
 
 		await store.refresh();
@@ -117,52 +127,88 @@ export default function (pi: ExtensionAPI): void {
 
 		const resolved: Array<{ session: IndexedSession; messages: SessionMessage[] }> = [];
 		const notes: string[] = [];
+		// A session-shaped token that reaches no session is otherwise silent: nothing is injected
+		// and the model gets no note. Tell the user, once per prompt, so a dead root or a
+		// double-indexed root is visible on the day it breaks.
+		const missed: string[] = [];
 		for (const ref of refs) {
+			const label = `#${neutralizeAttribute(ref)}`;
 			const resolution = resolveReference(ref, indexed);
 			if (resolution.kind === "found") {
-				resolved.push({ session: resolution.session, messages: await readMessages(resolution.session) });
-			} else if (resolution.kind === "ambiguous") {
+				// One unreadable file must not discard the messages already read for the other
+				// references: turn the failure into a note for this reference only.
+				try {
+					resolved.push({ session: resolution.session, messages: await readMessages(resolution.session) });
+				} catch (error) {
+					notes.push(`${label} could not be read: ${neutralizeAttribute(errorMessage(error))}`);
+				}
+				continue;
+			}
+			if (resolution.kind === "ambiguous") {
 				const choices = sortRecent(resolution.candidates)
 					.slice(0, 5)
-					.map((candidate) => `${referenceToken(candidate, resolution.candidates)} (${candidate.cwd})`)
+					.map(
+						(candidate) =>
+							`${neutralizeAttribute(referenceToken(candidate, resolution.candidates))} (${neutralizeAttribute(candidate.cwd)})`,
+					)
 					.join("; ");
-				notes.push(`#${ref} is ambiguous. Candidates: ${choices}`);
+				notes.push(`${label} is ambiguous. Candidates: ${choices}`);
+				if (isSessionShaped(ref)) missed.push(`${label} is ambiguous (${resolution.candidates.length} candidates)`);
 			} else {
-				notes.push(`#${ref} matched no session.`);
+				notes.push(`${label} matched no session.`);
+				if (isSessionShaped(ref)) missed.push(`${label} matched no session`);
 			}
 		}
+		// The cap must be visible: a user who writes four references must not believe all four
+		// were injected.
+		for (const ref of all.slice(config.maxReferences)) {
+			notes.push(`#${neutralizeAttribute(ref)} was not included (max ${config.maxReferences} per prompt)`);
+		}
+		if (missed.length > 0) ctx.ui.notify(`pi-sessions: ${missed.join("; ")}`, "warning");
 
 		// A prompt whose tokens all miss is ordinary text (`#42` for an issue): leave it
 		// byte-identical. Notes for unknown or ambiguous tokens only ride along with a
 		// digest that did resolve.
 		if (resolved.length === 0) return;
 
-		const summaries = await Promise.all(
-			resolved.map(async (entry) => {
-				if (config.summaryMode === "off") {
-					return { session: entry.session, messages: entry.messages, result: null };
-				}
-				if (ctx.hasUI) ctx.ui.setStatus(STATUS_KEY, `summarizing ${entry.session.name ?? entry.session.id}…`);
-				const result = await summarizeWithModel(ctx, entry.session, entry.messages);
-				return { session: entry.session, messages: entry.messages, result };
-			}),
-		);
-		if (ctx.hasUI) ctx.ui.setStatus(STATUS_KEY, undefined);
-
-		const blocks: string[] = [];
-		for (const entry of summaries) {
-			const gitInfo = await git(entry.session.cwd);
-			const result = entry.result;
-			const summaryText = result && "text" in result ? result.text : null;
-			const summaryNote =
-				result && "error" in result
-					? result.error
-					: config.summaryMode === "off"
-						? "summaries are disabled in pi-sessions config"
-						: null;
-			blocks.push(
-				buildDigest(entry.session, entry.messages, { git: gitInfo, summary: summaryText, summaryNote }, config, Date.now()),
+		let blocks: string[] = [];
+		try {
+			const summaries = await Promise.all(
+				resolved.map(async (entry) => {
+					// Git runs beside the summary, not after it: the critical path is
+					// max(git, summary), never their sum. Both already never throw.
+					const gitInfo = git(entry.session.cwd);
+					if (config.summaryMode === "off") {
+						return { session: entry.session, messages: entry.messages, result: null, git: await gitInfo };
+					}
+					if (ctx.hasUI) ctx.ui.setStatus(STATUS_KEY, `summarizing ${entry.session.name ?? entry.session.id}…`);
+					const [result, section] = await Promise.all([
+						summarizeWithModel(ctx, entry.session, entry.messages),
+						gitInfo,
+					]);
+					return { session: entry.session, messages: entry.messages, result, git: section };
+				}),
 			);
+			blocks = summaries.map((entry) => {
+				const result = entry.result;
+				const summaryText = result && "text" in result ? result.text : null;
+				const summaryNote =
+					result && "error" in result
+						? result.error
+						: config.summaryMode === "off"
+							? "summaries are disabled in pi-sessions config"
+							: null;
+				return buildDigest(
+					entry.session,
+					entry.messages,
+					{ git: entry.git, summary: summaryText, summaryNote },
+					config,
+					Date.now(),
+				);
+			});
+		} finally {
+			// Clear even if a digest builder throws: a stranded `summarizing …` is worse than a lost turn.
+			if (ctx.hasUI) ctx.ui.setStatus(STATUS_KEY, undefined);
 		}
 		if (notes.length > 0) blocks.push(notes.join("\n"));
 
@@ -226,9 +272,15 @@ export default function (pi: ExtensionAPI): void {
 				cwd: ctx.cwd,
 				sessionPath: ctx.sessionManager.getSessionFile(),
 			});
+			// A root that fails to resolve or read is invisible in the counts, so name it here.
+			const roots = store.rootReport;
+			const failed =
+				roots.failed.length > 0
+					? `; roots failed: ${roots.failed.map((failure) => `${failure.root} (${failure.reason})`).join(", ")}`
+					: "";
 			ctx.ui.notify(
-				`pi-sessions: ${store.size} indexed, ${visible.length} visible across ${new Set(visible.map((s) => s.cwd)).size} repos (${parsed} re-parsed)`,
-				"info",
+				`pi-sessions: ${store.size} indexed, ${visible.length} visible across ${new Set(visible.map((s) => s.cwd)).size} repos (${parsed} re-parsed); roots walked: ${roots.walked}${failed}`,
+				failed ? "warning" : "info",
 			);
 		},
 	});

@@ -173,10 +173,61 @@ test("relevant mode uses the query and excludes non-matching messages", async ()
 	assert.ok(!relevant.includes("Rename the widget factory"));
 });
 
-test("summary mode returns the summary", async () => {
+test("every result names the session file and repo, so the agent can continue there", async () => {
+	const tool = createSessionReadTool(dialogueDeps());
+	const called: Array<{ ref: string; mode?: string; query?: string; maxTokens?: number }> = [
+		{ ref: "feature-db-orm", mode: "digest" },
+		{ ref: "feature-db-orm", mode: "handoff" },
+		{ ref: "feature-db-orm", mode: "relevant", query: "ORM" },
+		{ ref: "feature-db-orm", mode: "transcript" },
+		{ ref: "feature-db-orm", mode: "summary" },
+	];
+	for (const params of called) {
+		const text = body(await tool.execute("id", params));
+		assert.ok(
+			text.startsWith(`session: ${backend.path}\nrepo: ${backend.cwd}\n`),
+			`${params.mode} must start with the path header, got ${JSON.stringify(text.slice(0, 90))}`,
+		);
+	}
+});
+
+test("the paths also ride with an ambiguous, missing, unreadable, or empty result", async () => {
+	const other = { ...backend, path: "/sessions/002.jsonl", id: "bbbbbbbb", cwd: "/repo/backend-tests" };
+	const tool = createSessionReadTool(deps({ sessions: () => [backend, other] }));
+	const ambiguous = body(await tool.execute("id", { ref: "feature-db-orm", mode: "digest" }));
+	assert.ok(
+		ambiguous.startsWith(`session: ${backend.path}, ${other.path}\nrepo: ${backend.cwd}, ${other.cwd}\n`),
+		ambiguous,
+	);
+
+	const missing = body(await tool.execute("id", { ref: "nope", mode: "digest" }));
+	assert.ok(missing.startsWith("session: (none)\nrepo: (none)\n"), missing);
+
+	const unreadable = createSessionReadTool(
+		deps({
+			readMessages: async () => {
+				throw new Error("not a valid pi session");
+			},
+		}),
+	);
+	assert.ok(
+		body(await unreadable.execute("id", { ref: "feature-db-orm", mode: "digest" })).startsWith(
+			`session: ${backend.path}\nrepo: ${backend.cwd}\n`,
+		),
+	);
+
+	const empty = createSessionReadTool(deps({ readMessages: async () => [] }));
+	assert.ok(
+		body(await empty.execute("id", { ref: "feature-db-orm", mode: "digest" })).startsWith(
+			`session: ${backend.path}\nrepo: ${backend.cwd}\n`,
+		),
+	);
+});
+
+test("summary mode returns the summary under the path header", async () => {
 	const tool = createSessionReadTool(deps());
 	const summary = body(await tool.execute("id", { ref: "feature-db-orm", mode: "summary" }));
-	assert.equal(summary, "handoff summary");
+	assert.equal(summary, `session: ${backend.path}\nrepo: ${backend.cwd}\nhandoff summary`);
 });
 
 test("a failed summary is reported, not thrown", async () => {
@@ -288,7 +339,7 @@ test("a summary adapter that throws is reported, not thrown", async () => {
 test("mode output obeys the token budget and the explicit request", async () => {
 	const tool = createSessionReadTool(dialogueDeps());
 	const small = body(await tool.execute("id", { ref: "feature-db-orm", mode: "transcript", maxTokens: 500 }));
-	assert.ok(small.length <= 500 * 4 + 50);
+	assert.ok(small.length <= 500 * 4 + 120, `header plus view exceeded the budget: ${small.length}`);
 
 	const large = body(await tool.execute("id", { ref: "feature-db-orm", mode: "transcript", maxTokens: 12000 }));
 	assert.ok(large.length > small.length);
@@ -297,5 +348,5 @@ test("mode output obeys the token budget and the explicit request", async () => 
 		dialogueDeps({ config: resolveConfig({ digestTokens: 500, maxDigestTokens: 500 }) }),
 	);
 	const clamped = body(await capped.execute("id", { ref: "feature-db-orm", mode: "transcript", maxTokens: 12000 }));
-	assert.ok(clamped.length <= 500 * 4 + 50);
+	assert.ok(clamped.length <= 500 * 4 + 120, `header plus view exceeded the clamp: ${clamped.length}`);
 });
