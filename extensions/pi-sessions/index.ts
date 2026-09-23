@@ -131,6 +131,9 @@ export default function (pi: ExtensionAPI): void {
 		// and the model gets no note. Tell the user, once per prompt, so a dead root or a
 		// double-indexed root is visible on the day it breaks.
 		const missed: string[] = [];
+		// A token that resolved and then failed to read is the other silent class: it is never
+		// `missed`, so without its own record the note below is built and then discarded.
+		const readFailures: string[] = [];
 		for (const ref of refs) {
 			const label = `#${neutralizeAttribute(ref)}`;
 			const resolution = resolveReference(ref, indexed);
@@ -141,6 +144,7 @@ export default function (pi: ExtensionAPI): void {
 					resolved.push({ session: resolution.session, messages: await readMessages(resolution.session) });
 				} catch (error) {
 					notes.push(`${label} could not be read: ${neutralizeAttribute(errorMessage(error))}`);
+					readFailures.push(`${label} could not be read`);
 				}
 				continue;
 			}
@@ -164,12 +168,15 @@ export default function (pi: ExtensionAPI): void {
 		for (const ref of all.slice(config.maxReferences)) {
 			notes.push(`#${neutralizeAttribute(ref)} was not included (max ${config.maxReferences} per prompt)`);
 		}
-		if (missed.length > 0) ctx.ui.notify(`pi-sessions: ${missed.join("; ")}`, "warning");
+		if (missed.length > 0 || readFailures.length > 0) {
+			ctx.ui.notify(`pi-sessions: ${[...missed, ...readFailures].join("; ")}`, "warning");
+		}
 
 		// A prompt whose tokens all miss is ordinary text (`#42` for an issue): leave it
 		// byte-identical. Notes for unknown or ambiguous tokens only ride along with a
-		// digest that did resolve.
-		if (resolved.length === 0) return;
+		// digest that did resolve. A read failure does not: the user asked for a real session,
+		// so the note explaining what happened must reach them even on its own.
+		if (resolved.length === 0 && readFailures.length === 0) return;
 
 		let blocks: string[] = [];
 		try {

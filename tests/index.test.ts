@@ -622,6 +622,44 @@ test("one unreadable session file does not discard the other digests", async () 
 	}
 });
 
+test("a single found-but-unreadable reference warns and is not dropped silently", async () => {
+	const brokenRoot = mkdtempSync(join(tmpdir(), "pi-sessions-single-broken-"));
+	const projectDir = join(brokenRoot, "--repo-broken--");
+	mkdirSync(projectDir, { recursive: true });
+	// Resolves by name (the header parses), then throws on open (the header has no id).
+	writeFileSync(
+		join(projectDir, "broken.jsonl"),
+		[
+			JSON.stringify({ type: "session", version: 3, cwd: "/repo/broken" }),
+			JSON.stringify({ type: "session_info", id: "a", parentId: null, name: "broken-only" }),
+			JSON.stringify({ type: "message", id: "b", parentId: "a", message: { role: "user", content: "hi" } }),
+		].join("\n") + "\n",
+		"utf8",
+	);
+
+	try {
+		const h = harness();
+		register(h.pi);
+		writeConfig({ summaryMode: "off", extraRoots: [brokenRoot] });
+		const { ctx, notifications } = apiCtx();
+		await h.emit("session_start", ctx);
+
+		// The token resolved, so it never enters `missed`: without the read-failure record the
+		// note was built and then discarded by the `resolved.length === 0` early return.
+		const content = injected(await h.prompt("Continue from #broken-only", ctx)).content;
+		assert.ok(content.includes("#broken-only could not be read:"), content);
+		assert.equal(notifications.length, 1, notifications.join(" | "));
+		assert.ok(notifications[0]?.includes("#broken-only could not be read"), notifications[0]);
+
+		// The #42 guarantee is unchanged: an unresolved token injects nothing and notifies nothing.
+		assert.equal(await h.prompt("Reply with only the number in issue #42", ctx), undefined);
+		assert.equal(await h.prompt("Nothing to see in #hashtag", ctx), undefined);
+		assert.equal(notifications.length, 1, notifications.join(" | "));
+	} finally {
+		rmSync(brokenRoot, { recursive: true, force: true });
+	}
+});
+
 test("a session-shaped dead token warns the user, a bare issue number does not", async () => {
 	const h = harness();
 	register(h.pi);
