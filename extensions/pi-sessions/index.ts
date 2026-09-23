@@ -101,7 +101,10 @@ async function summarizeWithModel(
 		const completion = await ctx.modelRegistry.complete(
 			model,
 			{ messages: [{ role: "user", content: prompt, timestamp: Date.now() }] },
-			{ signal },
+			// sessionId is not decoration: pi-ai's opencode provider turns it into the
+			// x-opencode-session routing header and the API rejects a request without it.
+			// pi's own turn loop passes it; a bare { signal } returned an empty message.
+			{ signal, sessionId: ctx.sessionManager.getSessionId() },
 		);
 		return messageText(completion);
 	};

@@ -171,6 +171,7 @@ function apiCtx(options: CtxOptions = {}): ApiCtx {
 		},
 		sessionManager: {
 			getSessionFile: () => options.sessionFile,
+			getSessionId: () => "session-under-test",
 		},
 		ui: {
 			setStatus: (key: string, text: string | undefined) => {
@@ -762,6 +763,9 @@ test("a blocking summary resolves config.summaryModel and ships as the handoff",
 
 	assert.ok(content.includes("Handoff: FAKE-HANDOFF"), content);
 	assert.deepEqual(calls[0]?.model, picked);
+	// pi-ai's opencode provider derives its routing header from sessionId; without it the API
+	// answers 400 and the message is empty, which degrades every blocking summary silently.
+	assert.equal((calls[0]?.options as { sessionId?: string } | undefined)?.sessionId, "session-under-test");
 	const prompt = (calls[0]?.context as { messages?: Array<{ role: string; content: string }> })?.messages?.[0];
 	assert.equal(prompt?.role, "user");
 	assert.ok(prompt?.content.includes("Session transcript:"), prompt?.content);
