@@ -47,7 +47,7 @@ function hit(matches: IndexedSession[]): Resolution {
 }
 
 /** Characters `extractReferences` can read back: anything else truncates the token. */
-const TOKEN_SAFE = /^[a-z0-9._-]+$/;
+const TOKEN_SAFE = /^[A-Za-z0-9._-]+$/;
 
 export function resolveReference(ref: string, sessions: IndexedSession[]): Resolution {
 	// Guard the primitive, not just the tool: an empty or whitespace query makes the fuzzy
@@ -110,5 +110,8 @@ export function referenceToken(session: IndexedSession, sessions: IndexedSession
 	// A repo qualifier only disambiguates ACROSS repos. Two sessions in one repo sharing a name
 	// (a clone or fork keeps the name) would both emit #repo/slug, which resolves ambiguously,
 	// so fall back to the id — the id-prefix branch always resolves a unique id.
-	return sameSlug.some((s) => repoName(s.cwd) === repo) ? `#${session.id}` : `#${repo}/${slug}`;
+	return sameSlug.some((s) => repoName(s.cwd) === repo)
+		? `#${session.id}`
+		// The resolver lowercases the qualifier before comparing, so emit it lowercase.
+		: `#${repo.toLowerCase()}/${slug}`;
 }

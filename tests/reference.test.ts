@@ -138,6 +138,16 @@ test("every referenceToken resolves back to its own session", () => {
 	];
 	for (const source of spaced) roundTrip(source, spaced);
 
+	// An uppercase repo basename must keep its readable qualifier: the token is emitted
+	// lowercase, which the case-insensitive resolver reads back, instead of a full id.
+	const upperRepo = [
+		session({ id: "aaaa1111", name: "fix-auth", cwd: "/repo/Backend", modifiedMs: 5000 }),
+		session({ id: "bbbb2222", name: "fix-auth", cwd: "/repo/frontend", modifiedMs: 4000 }),
+	];
+	for (const source of upperRepo) roundTrip(source, upperRepo);
+	const upperToken = referenceToken(upperRepo[0]!, upperRepo);
+	assert.ok(upperToken.startsWith("#backend/"), `uppercase repo should keep its qualifier: ${upperToken}`);
+
 	// A name with a colon would emit `#feat:-auth`, which the extractor cuts to `feat`.
 	const colons = [
 		session({ id: "cccc3333", name: "feat: auth", cwd: "/repo/a", modifiedMs: 5000 }),
