@@ -57,12 +57,41 @@ test("formatSessionItem shows the name as label and repo, age, size, state as de
 	assert.ok(item.description?.includes("finished"));
 });
 
-test("formatSessionItem marks active sessions and names unnamed ones by id", () => {
+test("formatSessionItem marks active sessions and references unnamed ones by id", () => {
 	const item = formatSessionItem(backend, all, 1_000_000 + 30_000);
 	assert.ok(item.description?.includes("active"));
-	const unnamed = formatSessionItem(session({ id: "dddddddd", modifiedMs: 2_000_000 }), all, 2_000_000);
+	// No first request either, so the label has nothing to fall back to.
+	const unnamed = formatSessionItem(
+		session({ id: "dddddddd", modifiedMs: 2_000_000, firstUserMessage: "" }),
+		all,
+		2_000_000,
+	);
 	assert.equal(unnamed.label, "(unnamed)");
 	assert.equal(unnamed.value, "#dddddddd");
+});
+
+test("an unnamed session is labelled by its first request", () => {
+	const unnamed = formatSessionItem(
+		session({ id: "dddddddd", modifiedMs: 2_000_000, firstUserMessage: "add session grouping to the sidebar" }),
+		all,
+		2_000_000,
+	);
+	assert.equal(unnamed.label, "add session grouping to the sidebar");
+	// The label is display only: the token still has to resolve, so an unnamed session is
+	// still referenced by its id.
+	assert.equal(unnamed.value, "#dddddddd");
+});
+
+test("a long or multi-line first request is collapsed and truncated", () => {
+	const item = formatSessionItem(
+		session({ id: "ffffffff", firstUserMessage: `first line\nsecond line ${"x".repeat(200)}` }),
+		all,
+		2_000_000,
+	);
+	assert.equal(item.label.length, 60);
+	assert.ok(item.label.endsWith("…"), item.label);
+	assert.ok(!item.label.includes("\n"), item.label);
+	assert.ok(item.label.startsWith("first line second line"), item.label);
 });
 
 test("a bare # lists every session in the order the store gives them", async () => {

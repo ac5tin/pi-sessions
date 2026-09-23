@@ -4,6 +4,7 @@ import type { IndexedSession } from "./types.ts";
 
 const MAX_ITEMS = 20;
 const ACTIVE_WINDOW_MS = 2 * 60 * 1000;
+const LABEL_CHARS = 60;
 const TOKEN_PATTERN = /(?:^|[\s(])#([A-Za-z0-9._/-]*)$/;
 
 export interface AutocompleteDeps {
@@ -28,6 +29,18 @@ export function relativeLabel(modifiedMs: number, nowMs: number): string {
 	return `${Math.round(hours / 24)} d ago`;
 }
 
+/**
+ * A session the developer never named would otherwise render as one more identical
+ * "(unnamed)" row — useless in a list that holds forty of them. The first request is the
+ * best label available, and the store already parses it. The name wins when it exists.
+ */
+function labelFor(session: IndexedSession): string {
+	if (session.name) return session.name;
+	const first = session.firstUserMessage.replace(/\s+/g, " ").trim();
+	if (!first) return "(unnamed)";
+	return first.length > LABEL_CHARS ? `${first.slice(0, LABEL_CHARS - 1)}…` : first;
+}
+
 export function formatSessionItem(session: IndexedSession, all: IndexedSession[], nowMs: number): AutocompleteItem {
 	const state = nowMs - session.modifiedMs < ACTIVE_WINDOW_MS ? "active" : "finished";
 	const parts = [
@@ -38,7 +51,7 @@ export function formatSessionItem(session: IndexedSession, all: IndexedSession[]
 	];
 	return {
 		value: referenceToken(session, all),
-		label: session.name ?? "(unnamed)",
+		label: labelFor(session),
 		description: parts.join(" · "),
 	};
 }
