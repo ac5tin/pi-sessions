@@ -309,6 +309,9 @@ export default function (pi: ExtensionAPI): void {
 		description: "Show pi-sessions index statistics and reload config",
 		handler: async (_args, ctx) => {
 			Object.assign(config, loadConfig());
+			// Rebuild the store, like session_start does: it captures extraRoots at construction,
+			// so re-reading the config alone would leave a changed roots list unapplied.
+			store = new SessionStore({ root: sessionsRoot(), extraRoots: config.extraRoots });
 			const parsed = await store.refresh();
 			const visible = store.visible(config, {
 				cwd: ctx.cwd,

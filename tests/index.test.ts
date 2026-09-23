@@ -810,7 +810,12 @@ test("session_start refreshes the shared config object the tool closure holds", 
 	await warm();
 	const full = toolText(await tool.execute("call", { ref: "feature-db-orm", mode: "transcript", maxTokens: 12000 }));
 
-	assert.ok(clipped.length < 200, `expected the clipped header plus view, got ${JSON.stringify(clipped)}`);
+	// maxDigestTokens 1 clips the view to a few characters. The header and the untrusted-data
+	// line are framing and are never clipped, so bound the result by them.
+	const framing =
+		`session: ${join(sessionsDir, "--repo-backend--", "001_named.jsonl")}\nrepo: /repo/backend\n`.length +
+		4 + 1 + UNTRUSTED_LINE.length + 1;
+	assert.ok(clipped.length <= framing, `expected the clipped header plus view, got ${JSON.stringify(clipped)}`);
 	assert.ok(full.includes("Build the ORM layer for the orders table"), full);
 });
 
@@ -830,6 +835,48 @@ test("the /pi-sessions command reports the roots walked and names a dead root", 
 	assert.ok(report.includes("roots walked: 1"), report);
 	assert.ok(report.includes(deadRoot), report);
 	assert.ok(report.includes("path does not resolve"), report);
+});
+
+test("the /pi-sessions command applies a changed extraRoots", async () => {
+	const extraRoot = mkdtempSync(join(tmpdir(), "pi-sessions-reload-"));
+	const projectDir = join(extraRoot, "--repo-added--");
+	mkdirSync(projectDir, { recursive: true });
+	writeFileSync(
+		join(projectDir, "added.jsonl"),
+		[
+			JSON.stringify({ type: "session", version: 3, id: "1234abcd-0000-4000-8000-0000000000aa", cwd: "/repo/added" }),
+			JSON.stringify({ type: "message", id: "m1", parentId: null, message: { role: "user", content: "one" } }),
+			JSON.stringify({ type: "message", id: "m2", parentId: "m1", message: { role: "user", content: "two" } }),
+			JSON.stringify({ type: "message", id: "m3", parentId: "m2", message: { role: "user", content: "three" } }),
+		].join("\n") + "\n",
+		"utf8",
+	);
+
+	try {
+		const h = harness();
+		register(h.pi);
+		writeConfig({ summaryMode: "off" });
+		const { ctx, notifications } = apiCtx();
+		await h.emit("session_start", ctx);
+
+		const command = h.commands.find((candidate) => candidate.name === "pi-sessions");
+		assert.ok(command);
+		const indexed = (message: string) => Number(message.match(/(\d+) indexed/)?.[1]);
+
+		await command.handler("", ctx);
+		const before = notifications.at(-1) ?? "";
+		assert.ok(before.includes("roots walked: 1"), before);
+
+		// The README says /pi-sessions re-reads the config file. The store must be rebuilt too,
+		// or the SessionStore keeps the extraRoots it captured at session_start.
+		writeConfig({ summaryMode: "off", extraRoots: [extraRoot] });
+		await command.handler("", ctx);
+		const after = notifications.at(-1) ?? "";
+		assert.ok(after.includes("roots walked: 2"), after);
+		assert.equal(indexed(after) - indexed(before), 1, `${before} -> ${after}`);
+	} finally {
+		rmSync(extraRoot, { recursive: true, force: true });
+	}
 });
 
 test("session_shutdown clears the status line", async () => {

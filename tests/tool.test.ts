@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { DEFAULT_CONFIG, resolveConfig } from "../extensions/pi-sessions/config.ts";
+import { UNTRUSTED_LINE } from "../extensions/pi-sessions/digest.ts";
 import { createSessionReadTool, MODES } from "../extensions/pi-sessions/tool.ts";
 import type { GitInfo, IndexedSession, SessionMessage } from "../extensions/pi-sessions/types.ts";
 
@@ -284,7 +285,7 @@ test("the paths also ride with an ambiguous, missing, unreadable, or empty resul
 test("summary mode returns the summary under the path header", async () => {
 	const tool = createSessionReadTool(deps());
 	const summary = body(await tool.execute("id", { ref: "feature-db-orm", mode: "summary" }));
-	assert.equal(summary, `session: ${backend.path}\nrepo: ${backend.cwd}\nhandoff summary`);
+	assert.equal(summary, `session: ${backend.path}\nrepo: ${backend.cwd}\nhandoff summary\n${UNTRUSTED_LINE}`);
 });
 
 test("a failed summary is reported, not thrown", async () => {
@@ -393,10 +394,31 @@ test("a summary adapter that throws is reported, not thrown", async () => {
 	assert.equal(resultDetails(stringResult).error, "socket closed");
 });
 
+test("every session-text result ends with the untrusted-data line", async () => {
+	const tool = createSessionReadTool(dialogueDeps());
+	for (const params of [
+		{ ref: "feature-db-orm", mode: "digest" },
+		{ ref: "feature-db-orm", mode: "handoff", maxTokens: 500 },
+		{ ref: "feature-db-orm", mode: "relevant", query: "ORM", maxTokens: 500 },
+		{ ref: "feature-db-orm", mode: "transcript", maxTokens: 500 },
+		{ ref: "feature-db-orm", mode: "summary" },
+	]) {
+		const text = body(await tool.execute("id", params));
+		assert.equal(text.split(UNTRUSTED_LINE).length - 1, 1, `${params.mode} must frame its content exactly once`);
+		assert.ok(text.endsWith(UNTRUSTED_LINE), `${params.mode} must end with the untrusted-data line`);
+	}
+
+	// A result that carries no session text is a note, not content to frame.
+	const missing = body(await tool.execute("id", { ref: "nope", mode: "digest" }));
+	assert.ok(!missing.includes(UNTRUSTED_LINE), missing);
+});
+
 test("mode output obeys the token budget and the explicit request", async () => {
+	// 500 tokens of view plus the session/repo header and the untrusted-data line.
+	const framing = 200;
 	const tool = createSessionReadTool(dialogueDeps());
 	const small = body(await tool.execute("id", { ref: "feature-db-orm", mode: "transcript", maxTokens: 500 }));
-	assert.ok(small.length <= 500 * 4 + 120, `header plus view exceeded the budget: ${small.length}`);
+	assert.ok(small.length <= 500 * 4 + framing, `header plus view exceeded the budget: ${small.length}`);
 
 	const large = body(await tool.execute("id", { ref: "feature-db-orm", mode: "transcript", maxTokens: 12000 }));
 	assert.ok(large.length > small.length);
@@ -405,5 +427,5 @@ test("mode output obeys the token budget and the explicit request", async () => 
 		dialogueDeps({ config: resolveConfig({ digestTokens: 500, maxDigestTokens: 500 }) }),
 	);
 	const clamped = body(await capped.execute("id", { ref: "feature-db-orm", mode: "transcript", maxTokens: 12000 }));
-	assert.ok(clamped.length <= 500 * 4 + 120, `header plus view exceeded the clamp: ${clamped.length}`);
+	assert.ok(clamped.length <= 500 * 4 + framing, `header plus view exceeded the clamp: ${clamped.length}`);
 });

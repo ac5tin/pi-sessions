@@ -1,6 +1,6 @@
 import { Type } from "typebox";
 import type { Config } from "./config.ts";
-import { buildDigest, neutralizeAttribute, neutralizePath } from "./digest.ts";
+import { buildDigest, neutralizeAttribute, neutralizePath, UNTRUSTED_LINE } from "./digest.ts";
 import { referenceToken, resolveReference } from "./reference.ts";
 import type { SummaryResult } from "./summary.ts";
 import { extractHandoff, extractRelevant, extractTranscript } from "./transcript.ts";
@@ -42,6 +42,15 @@ function errorMessage(error: unknown): string {
  */
 function header(sessionPath: string, repo: string): string {
 	return `session: ${neutralizePath(sessionPath)}\nrepo: ${neutralizePath(repo)}`;
+}
+
+/**
+ * Session text is untrusted data. The notice names the content above it, so it follows the
+ * content, exactly as in the digest: a handoff, relevant, transcript or summary result must
+ * not be the one unframed way session text reaches the model.
+ */
+function untrusted(text: string): string {
+	return `${text}\n${UNTRUSTED_LINE}`;
 }
 
 export function createSessionReadTool(deps: ToolDeps) {
@@ -140,11 +149,11 @@ export function createSessionReadTool(deps: ToolDeps) {
 
 			switch (mode) {
 				case "handoff":
-					return text(`${paths}\n${extractHandoff(messages, maxTokens).text}`, details);
+					return text(untrusted(`${paths}\n${extractHandoff(messages, maxTokens).text}`), details);
 				case "relevant":
-					return text(`${paths}\n${extractRelevant(messages, params.query ?? "", maxTokens).text}`, details);
+					return text(untrusted(`${paths}\n${extractRelevant(messages, params.query ?? "", maxTokens).text}`), details);
 				case "transcript":
-					return text(`${paths}\n${extractTranscript(messages, maxTokens).text}`, details);
+					return text(untrusted(`${paths}\n${extractTranscript(messages, maxTokens).text}`), details);
 				case "summary": {
 					let result: SummaryResult;
 					try {
@@ -156,7 +165,7 @@ export function createSessionReadTool(deps: ToolDeps) {
 						});
 					}
 					return "text" in result
-						? text(`${paths}\n${result.text}`, { ...details, cached: result.cached })
+						? text(untrusted(`${paths}\n${result.text}`), { ...details, cached: result.cached })
 						: text(`${paths}\nSummary unavailable: ${neutralizeAttribute(result.error)}`, { ...details, error: result.error });
 				}
 				default: {
