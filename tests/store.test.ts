@@ -1,11 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DEFAULT_CONFIG, resolveConfig } from "../extensions/pi-sessions/config.ts";
-import { isSubagent, parseSessionFile, SessionStore, textOfContent } from "../extensions/pi-sessions/store.ts";
+import { resolveReference } from "../extensions/pi-sessions/reference.ts";
+import { expandHome, isSubagent, parseSessionFile, SessionStore, textOfContent } from "../extensions/pi-sessions/store.ts";
 
 const FIXTURES = fileURLToPath(new URL("./fixtures/sessions", import.meta.url));
 
@@ -111,4 +112,118 @@ test("visible puts the current repo first, then newest first", async () => {
 	const ordered = store.visible(DEFAULT_CONFIG, { cwd: "/repo/frontend" }).map((s) => s.cwd);
 	assert.equal(ordered[0], "/repo/frontend");
 	assert.ok(ordered.slice(1).every((cwd) => cwd === "/repo/backend"));
+});
+
+test("visible orders newest first inside the current-repo partition", async () => {
+	const root = mkdtempSync(join(tmpdir(), "pi-sessions-order-"));
+	const mine = join(root, "--repo-mine--");
+	const other = join(root, "--repo-other--");
+	mkdirSync(mine, { recursive: true });
+	mkdirSync(other, { recursive: true });
+	const write = (dir: string, id: string, cwd: string, seconds: number) => {
+		const file = join(dir, `${id}.jsonl`);
+		const messages = [1, 2, 3].map((n) =>
+			JSON.stringify({ type: "message", id: `m${n}`, parentId: n === 1 ? null : `m${n - 1}`, message: { role: "user", content: `turn ${n}` } }),
+		);
+		writeFileSync(file, [`{"type":"session","version":3,"id":"${id}","cwd":"${cwd}"}`, ...messages].join("\n") + "\n");
+		utimesSync(file, seconds, seconds);
+	};
+	write(mine, "aaaa0001", "/repo/mine", 1_000);
+	write(mine, "aaaa0002", "/repo/mine", 2_000);
+	// The newest session overall sits in another repo; the current-repo partition must still lead.
+	write(other, "bbbb0001", "/repo/other", 9_000);
+
+	const store = new SessionStore({ root });
+	await store.refresh();
+	const ordered = store.visible(DEFAULT_CONFIG, { cwd: "/repo/mine" }).map((s) => s.id);
+	assert.deepEqual(ordered, ["aaaa0002", "aaaa0001", "bbbb0001"]);
+	rmSync(root, { recursive: true, force: true });
+});
+
+test("an mtime-only change and a size-only change each force a re-parse", async () => {
+	const root = mkdtempSync(join(tmpdir(), "pi-sessions-touch-"));
+	const projectDir = join(root, "--repo-x--");
+	mkdirSync(projectDir, { recursive: true });
+	const file = join(projectDir, "live.jsonl");
+	writeFileSync(file, '{"type":"session","version":3,"id":"x1","cwd":"/repo/x"}\n');
+	// Whole-second times: a later utimesSync restores mtimeMs exactly, so a size-only change
+	// cannot ride in on a sub-millisecond mtime drift and pass a single-term gate.
+	utimesSync(file, 1_000, 1_000);
+
+	const store = new SessionStore({ root });
+	assert.equal(await store.refresh(), 1);
+
+	const before = statSync(file);
+	utimesSync(file, before.atimeMs / 1000, before.mtimeMs / 1000 + 5);
+	assert.equal(statSync(file).size, before.size, "the mtime-only change must keep the size");
+	assert.equal(await store.refresh(), 1, "an mtime-only change must re-parse");
+
+	const changed = statSync(file);
+	appendFileSync(file, '{"type":"message","id":"a","parentId":null,"message":{"role":"user","content":"hi"}}\n');
+	utimesSync(file, changed.atimeMs / 1000, changed.mtimeMs / 1000);
+	const after = statSync(file);
+	assert.equal(after.mtimeMs, changed.mtimeMs, "the restored mtime must be exact");
+	assert.notEqual(after.size, changed.size, "the size-only change must grow the file");
+	assert.equal(await store.refresh(), 1, "a size-only change must re-parse");
+	rmSync(root, { recursive: true, force: true });
+});
+
+test("overlapping roots are deduped by real path so every file is indexed once", async () => {
+	const relativeRoot = relative(process.cwd(), FIXTURES);
+	const store = new SessionStore({ root: FIXTURES, extraRoots: [relativeRoot] });
+	const parsed = await store.refresh();
+	assert.equal(parsed, 5, "the same directory reached through two spellings must not be walked twice");
+	assert.equal(store.size, 5);
+	const hit = resolveReference("feature-db-orm", store.all());
+	assert.equal(hit.kind, "found");
+	assert.equal(hit.kind === "found" && hit.session.path, join(FIXTURES, "--repo-backend--", "001_named.jsonl"));
+});
+
+test("a symlinked root that reaches an indexed root is deduped", async () => {
+	const linkRoot = mkdtempSync(join(tmpdir(), "pi-sessions-link-"));
+	const link = join(linkRoot, "sessions-link");
+	symlinkSync(FIXTURES, link, "dir");
+	try {
+		const store = new SessionStore({ root: FIXTURES, extraRoots: [link] });
+		await store.refresh();
+		assert.equal(store.size, 5);
+		// The surviving root keeps the first spelling, so the self-hide check still compares
+		// against pi's own spelling of the current session file.
+		assert.ok(store.get(join(FIXTURES, "--repo-backend--", "001_named.jsonl")));
+	} finally {
+		rmSync(linkRoot, { recursive: true, force: true });
+	}
+
+	// Reached through the symlink, session.path must stay the symlink spelling: a real path
+	// would not match pi's spelling and the current session would offer itself.
+	const linked = mkdtempSync(join(tmpdir(), "pi-sessions-link-root-"));
+	const root = join(linked, "sessions");
+	symlinkSync(FIXTURES, root, "dir");
+	try {
+		const store = new SessionStore({ root });
+		await store.refresh();
+		const self = join(root, "--repo-backend--", "001_named.jsonl");
+		assert.ok(store.get(self), "the walk must keep the root's spelling");
+		const visible = store.visible(DEFAULT_CONFIG, { cwd: "/repo/backend", sessionPath: self });
+		assert.ok(!visible.some((session) => session.path === self), visible.map((session) => session.path).join(","));
+	} finally {
+		rmSync(linked, { recursive: true, force: true });
+	}
+});
+
+test("expandHome expands a leading tilde and leaves other paths alone", () => {
+	assert.equal(expandHome("~"), homedir());
+	assert.equal(expandHome("~/sessions"), join(homedir(), "sessions"));
+	assert.equal(expandHome("/abs/path"), "/abs/path");
+	assert.equal(expandHome("relative"), "relative");
+	assert.equal(expandHome("~weird"), "~weird");
+});
+
+test("the walk records a root that cannot be resolved instead of skipping it", async () => {
+	const dead = join(tmpdir(), `pi-sessions-dead-${process.pid}-${Date.now()}`);
+	const store = new SessionStore({ root: FIXTURES, extraRoots: [dead] });
+	await store.refresh();
+	assert.equal(store.size, 5);
+	assert.equal(store.rootReport.walked, 1);
+	assert.deepEqual(store.rootReport.failed, [{ root: dead, reason: "path does not resolve" }]);
 });

@@ -1,4 +1,5 @@
-import { readdir, readFile, stat } from "node:fs/promises";
+import { readdir, readFile, realpath, stat } from "node:fs/promises";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Config } from "./config.ts";
 import type { IndexedSession } from "./types.ts";
@@ -30,6 +31,17 @@ export function textOfContent(content: unknown, max: number): string {
 export function isSubagent(name: string | undefined): boolean {
 	if (!name) return false;
 	return SUBAGENT_NAME.test(name) || SUBAGENT_TAGGED.test(name);
+}
+
+function errorMessage(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
+}
+
+/** A leading `~` is a hand-written path, not a literal directory name. */
+export function expandHome(root: string): string {
+	if (root === "~") return homedir();
+	if (root.startsWith("~/")) return join(homedir(), root.slice(2));
+	return root;
 }
 
 function tryParse(line: string): Record<string, unknown> | null {
@@ -95,6 +107,17 @@ export function parseSessionFile(
 	};
 }
 
+export interface RootFailure {
+	root: string;
+	reason: string;
+}
+
+export interface RootReport {
+	/** Distinct roots that were actually read on the last walk. */
+	walked: number;
+	failed: RootFailure[];
+}
+
 export interface StoreOptions {
 	root: string;
 	extraRoots?: string[];
@@ -106,6 +129,7 @@ export class SessionStore {
 	readonly #extraRoots: string[];
 	readonly #maxFileBytes: number;
 	#cache = new Map<string, { mtimeMs: number; size: number; entry: IndexedSession }>();
+	#rootReport: RootReport = { walked: 0, failed: [] };
 
 	constructor(options: StoreOptions) {
 		this.#root = options.root;
@@ -117,19 +141,48 @@ export class SessionStore {
 		return this.#cache.size;
 	}
 
+	/** What the last walk saw: how many distinct roots it read, and which roots failed. */
+	get rootReport(): RootReport {
+		return { walked: this.#rootReport.walked, failed: this.#rootReport.failed.map((failure) => ({ ...failure })) };
+	}
+
 	async #walk(): Promise<string[]> {
 		const files: string[] = [];
+		const failed: RootFailure[] = [];
+		const seen = new Set<string>();
+		let walked = 0;
 		for (const root of [this.#root, ...this.#extraRoots]) {
-			const projectDirs = await readdir(root, { withFileTypes: true }).catch(() => []);
+			const expanded = expandHome(root);
+			// One realpath per root: the same directory reached through two spellings (absolute vs
+			// relative, symlink vs target) must not index every file twice. The first spelling is
+			// the one that survives the walk, so session.path still matches pi's own spelling of
+			// the current session file and the self-hide check keeps working.
+			const real = await realpath(expanded).catch(() => null);
+			if (real === null) {
+				failed.push({ root, reason: "path does not resolve" });
+				continue;
+			}
+			if (seen.has(real)) continue;
+			seen.add(real);
+
+			let projectDirs;
+			try {
+				projectDirs = await readdir(expanded, { withFileTypes: true });
+			} catch (error) {
+				failed.push({ root, reason: errorMessage(error) });
+				continue;
+			}
+			walked++;
 			for (const projectDir of projectDirs) {
 				if (!projectDir.isDirectory()) continue;
-				const projectPath = join(root, projectDir.name);
+				const projectPath = join(expanded, projectDir.name);
 				const entries = await readdir(projectPath, { withFileTypes: true }).catch(() => []);
 				for (const entry of entries) {
 					if (entry.isFile() && entry.name.endsWith(".jsonl")) files.push(join(projectPath, entry.name));
 				}
 			}
 		}
+		this.#rootReport = { walked, failed };
 		return files;
 	}
 
