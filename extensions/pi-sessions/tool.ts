@@ -1,6 +1,6 @@
 import { Type } from "typebox";
 import type { Config } from "./config.ts";
-import { buildDigest, neutralizeAttribute } from "./digest.ts";
+import { buildDigest, neutralizeAttribute, neutralizePath } from "./digest.ts";
 import { referenceToken, resolveReference } from "./reference.ts";
 import type { SummaryResult } from "./summary.ts";
 import { extractHandoff, extractRelevant, extractTranscript } from "./transcript.ts";
@@ -41,7 +41,7 @@ function errorMessage(error: unknown): string {
  * the text. Values are neutralized like any other interpolated value.
  */
 function header(sessionPath: string, repo: string): string {
-	return `session: ${neutralizeAttribute(sessionPath)}\nrepo: ${neutralizeAttribute(repo)}`;
+	return `session: ${neutralizePath(sessionPath)}\nrepo: ${neutralizePath(repo)}`;
 }
 
 export function createSessionReadTool(deps: ToolDeps) {

@@ -11,6 +11,8 @@ const REPORT_CHARS = 2000;
 const MAX_FILES = 40;
 const GIT_CHARS = 1200;
 const ATTRIBUTE_CHARS = 120;
+/** Right for a filesystem path in a tool result, wrong for an XML attribute (see neutralizePath). */
+const PATH_CHARS = 4096;
 const DROP_ORDER = ["git", "files", "ask", "goal", "report"];
 
 /**
@@ -77,9 +79,23 @@ function textOf(message: SessionMessage | undefined): string {
  * replacement then completes the very tag the attacker wanted. Slice before the final
  * neutralize so a cut value cannot leave a reconstructed delimiter behind.
  */
-export function neutralizeAttribute(value: string): string {
-	const stripped = value.replace(/[\r\n"]+/g, " ").trim().slice(0, ATTRIBUTE_CHARS);
+function neutralizeCapped(value: string, max: number): string {
+	const stripped = value.replace(/[\r\n"]+/g, " ").trim().slice(0, max);
 	return neutralize(stripped);
+}
+
+export function neutralizeAttribute(value: string): string {
+	return neutralizeCapped(value, ATTRIBUTE_CHARS);
+}
+
+/**
+ * A filesystem path in a `session_read` result header. The 120-char attribute cap is right
+ * for the XML digest header but wrong here: real session paths run past 200 characters, and
+ * a truncated path is not a file the agent can open. The delimiter neutralization is shared,
+ * so this unframed header cannot forge a frame either.
+ */
+export function neutralizePath(value: string): string {
+	return neutralizeCapped(value, PATH_CHARS);
 }
 
 export function buildDigest(

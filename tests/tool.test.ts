@@ -136,6 +136,23 @@ test("the candidate list says how many were omitted", async () => {
 	assert.ok(note.includes("; and 2 more"));
 });
 
+test("a realistic long path and cwd survive the header whole", async () => {
+	// Real session paths on this machine run from 127 to 221 characters (median 157): the
+	// 120-char attribute cap used to truncate every one of them, so the agent was told to
+	// open a file that does not exist.
+	const longPath = `/home/dev/.pi/agent/sessions/--home-dev-work-${"x".repeat(40)}-orders-backend--/2026-09-22T10-00-00-000Z_${"a".repeat(60)}.jsonl`;
+	const longCwd = `/home/dev/work/platform/services/${"d".repeat(90)}/backend`;
+	assert.ok(longPath.length > 120, `test path is only ${longPath.length} chars`);
+	assert.ok(longCwd.length > 120, `test cwd is only ${longCwd.length} chars`);
+
+	const tool = createSessionReadTool(deps({ sessions: () => [{ ...backend, path: longPath, cwd: longCwd }] }));
+	const text = body(await tool.execute("id", { ref: "feature-db-orm", mode: "digest" }));
+	assert.ok(
+		text.startsWith(`session: ${longPath}\nrepo: ${longCwd}\n`),
+		`the header must keep the whole path, got ${JSON.stringify(text.slice(0, 260))}`,
+	);
+});
+
 test("digest mode returns the digest block with the untrusted line", async () => {
 	const tool = createSessionReadTool(deps());
 	const result = await tool.execute("id", { ref: "a1b2c3d4", mode: "digest" });
