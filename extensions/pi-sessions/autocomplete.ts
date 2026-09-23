@@ -16,6 +16,11 @@ export interface AutocompleteDeps {
 	 * short token ambiguous, so the dropdown would hand the user a reference that cannot resolve.
 	 */
 	all: () => IndexedSession[];
+	/**
+	 * Refreshes the index before a list is served. Another agent can name a session after this
+	 * one started, and the index built at session_start would not know about it.
+	 */
+	refresh?: () => Promise<unknown>;
 	now: () => number;
 }
 
@@ -67,6 +72,10 @@ export function createSessionAutocompleteProvider(
 			const match = line.slice(0, cursorCol).match(TOKEN_PATTERN);
 			if (!match) return current.getSuggestions(lines, cursorLine, cursorCol, options);
 			if (options.signal.aborted) return current.getSuggestions(lines, cursorLine, cursorCol, options);
+
+			// A rename or a new session in another agent must show up here. The store throttles the
+			// walk, so a warm refresh is a readdir plus stat, not a re-parse of every session.
+			await deps.refresh?.();
 
 			const pool = deps.sessions();
 			if (pool.length === 0) return current.getSuggestions(lines, cursorLine, cursorCol, options);

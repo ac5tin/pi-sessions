@@ -140,6 +140,47 @@ test("visible orders newest first inside the current-repo partition", async () =
 	rmSync(root, { recursive: true, force: true });
 });
 
+test("refreshIfStale picks up a name another agent wrote", async () => {
+	const root = mkdtempSync(join(tmpdir(), "pi-sessions-rename-"));
+	const projectDir = join(root, "--repo-x--");
+	mkdirSync(projectDir, { recursive: true });
+	const file = join(projectDir, "live.jsonl");
+	writeFileSync(file, '{"type":"session","version":3,"id":"x1","cwd":"/repo/x"}\n');
+
+	const store = new SessionStore({ root });
+	await store.refresh();
+	assert.equal(store.get(file)?.name, undefined);
+
+	// Exactly what `/name` in another pi agent appends to the session file.
+	appendFileSync(file, '{"type":"session_info","name":"named elsewhere"}\n');
+
+	// Inside the window the index stands, which keeps the dropdown off the filesystem.
+	assert.equal(await store.refreshIfStale(60_000), 0);
+	assert.equal(store.get(file)?.name, undefined);
+
+	// Past the window the rename must arrive, or the dropdown in the other agent is useless.
+	assert.equal(await store.refreshIfStale(0), 1);
+	assert.equal(store.get(file)?.name, "named elsewhere");
+	rmSync(root, { recursive: true, force: true });
+});
+
+test("refreshIfStale joins a walk already in flight instead of calling the index fresh", async () => {
+	const root = mkdtempSync(join(tmpdir(), "pi-sessions-inflight-"));
+	const projectDir = join(root, "--repo-x--");
+	mkdirSync(projectDir, { recursive: true });
+	writeFileSync(join(projectDir, "one.jsonl"), '{"type":"session","version":3,"id":"x1","cwd":"/repo/x"}\n');
+
+	const store = new SessionStore({ root });
+	await store.refresh();
+
+	// A new session appears; a walk starts; a second caller arrives while it runs.
+	writeFileSync(join(projectDir, "two.jsonl"), '{"type":"session","version":3,"id":"x2","cwd":"/repo/x"}\n');
+	const inflight = store.refresh();
+	assert.equal(await store.refreshIfStale(60_000), 1, "must join the walk, not report a stale index as fresh");
+	assert.equal(await inflight, 1);
+	rmSync(root, { recursive: true, force: true });
+});
+
 test("an mtime-only change and a size-only change each force a re-parse", async () => {
 	const root = mkdtempSync(join(tmpdir(), "pi-sessions-touch-"));
 	const projectDir = join(root, "--repo-x--");

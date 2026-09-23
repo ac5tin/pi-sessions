@@ -43,6 +43,24 @@ const dialogue: SessionMessage[] = [
 const dialogueDeps = (over: Partial<Parameters<typeof createSessionReadTool>[0]> = {}) =>
 	deps({ readMessages: async () => dialogue, ...over });
 
+test("the tool refreshes the index before it resolves a reference", async () => {
+	let refreshed = 0;
+	const tool = createSessionReadTool(
+		deps({
+			refresh: async () => {
+				refreshed++;
+			},
+		}),
+	);
+
+	await tool.execute("call", { ref: "feature-db-orm" });
+	assert.equal(refreshed, 1, "a session named by another agent must still resolve");
+
+	// An empty reference is answered from the guard, before any index work.
+	await tool.execute("call", { ref: "   " });
+	assert.equal(refreshed, 1);
+});
+
 interface Details {
 	resolved?: boolean;
 	sessionPath?: string;

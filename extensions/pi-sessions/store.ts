@@ -130,6 +130,8 @@ export class SessionStore {
 	readonly #maxFileBytes: number;
 	#cache = new Map<string, { mtimeMs: number; size: number; entry: IndexedSession }>();
 	#rootReport: RootReport = { walked: 0, failed: [] };
+	#inflight: Promise<number> | null = null;
+	#refreshedAt = 0;
 
 	constructor(options: StoreOptions) {
 		this.#root = options.root;
@@ -186,8 +188,33 @@ export class SessionStore {
 		return files;
 	}
 
+	/**
+	 * Refreshes only when the index is older than maxAgeMs. Another agent can name, extend or
+	 * create a session at any moment, so a caller about to SHOW or RESOLVE sessions must not
+	 * serve an index built at session_start — that is exactly how a `/name` run in one agent
+	 * stayed invisible to the `#` dropdown in another.
+	 */
+	async refreshIfStale(maxAgeMs: number, nowMs = Date.now()): Promise<number> {
+		if (!this.#inflight && nowMs - this.#refreshedAt < maxAgeMs) return 0;
+		return this.refresh();
+	}
+
 	/** Re-reads only files whose mtime or size changed. Returns how many were parsed. */
 	async refresh(): Promise<number> {
+		// Reuse a walk already in flight: session_start warms the index in the background, and a
+		// dropdown that appears a moment later must not walk the tree a second time.
+		if (this.#inflight) return this.#inflight;
+		const run = this.#doRefresh();
+		this.#inflight = run;
+		try {
+			return await run;
+		} finally {
+			this.#inflight = null;
+			this.#refreshedAt = Date.now();
+		}
+	}
+
+	async #doRefresh(): Promise<number> {
 		const files = await this.#walk();
 		const present = new Set(files);
 		for (const key of [...this.#cache.keys()]) {

@@ -12,6 +12,11 @@ export type Mode = (typeof MODES)[number];
 export interface ToolDeps {
 	config: Config;
 	sessions: () => IndexedSession[];
+	/**
+	 * Refreshes the index before a reference is resolved, so a session another agent named or
+	 * created after this one indexed the store is still found.
+	 */
+	refresh?: () => Promise<unknown>;
 	readMessages: (session: IndexedSession) => Promise<SessionMessage[]>;
 	git: (cwd: string) => Promise<GitInfo | null>;
 	summary: (session: IndexedSession, messages: SessionMessage[]) => Promise<SummaryResult>;
@@ -100,6 +105,9 @@ export function createSessionReadTool(deps: ToolDeps) {
 					{ mode, resolved: false },
 				);
 			}
+
+			// A session named by another agent after this one indexed the store must still resolve.
+			await deps.refresh?.();
 
 			// Resolve and tokenize against one snapshot of the full index. The candidate list is a
 			// subset of it, so a token built from the subset can be ambiguous against a session

@@ -94,6 +94,25 @@ test("a long or multi-line first request is collapsed and truncated", () => {
 	assert.ok(item.label.startsWith("first line second line"), item.label);
 });
 
+test("the dropdown refreshes the index before it serves a list", async () => {
+	let refreshed = 0;
+	const p = createSessionAutocompleteProvider(passthrough, {
+		sessions: () => all,
+		all: () => all,
+		refresh: async () => {
+			refreshed++;
+		},
+		now: () => 2_000_000,
+	});
+
+	await p.getSuggestions(["#"], 0, 1, { signal: new AbortController().signal });
+	assert.equal(refreshed, 1, "a rename in another agent must reach the dropdown");
+
+	// A line that is not ours is delegated, so it must not touch the filesystem.
+	await p.getSuggestions(["hello"], 0, 5, { signal: new AbortController().signal });
+	assert.equal(refreshed, 1, "delegation must not refresh");
+});
+
 test("a bare # lists every session in the order the store gives them", async () => {
 	const suggestions = await provider().getSuggestions(["#"], 0, 1, { signal: new AbortController().signal });
 	assert.ok(suggestions);

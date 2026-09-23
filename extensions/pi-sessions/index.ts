@@ -16,6 +16,13 @@ import type { IndexedSession, SessionMessage } from "./types.ts";
 
 const MESSAGE_TYPE = "pi-sessions-reference";
 const STATUS_KEY = "pi-sessions";
+/**
+ * How stale the session index may be before the dropdown or the tool refreshes it. Another
+ * agent can rename or create a session at any moment, so a store built at session_start is
+ * not good enough to answer "which sessions exist" — that is how a `/name` in one agent
+ * stayed invisible to the `#` dropdown in another.
+ */
+const AUTO_REFRESH_MS = 2_000;
 
 function errorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
@@ -130,6 +137,7 @@ export default function (pi: ExtensionAPI): void {
 				sessions: () =>
 					store.visible(config, { cwd: ctx.cwd, sessionPath: ctx.sessionManager.getSessionFile() }),
 				all: () => store.all(),
+				refresh: () => store.refreshIfStale(AUTO_REFRESH_MS),
 				now: () => Date.now(),
 			}),
 		);
@@ -144,6 +152,7 @@ export default function (pi: ExtensionAPI): void {
 		createSessionReadTool({
 			config,
 			sessions: () => store.all(),
+			refresh: () => store.refreshIfStale(AUTO_REFRESH_MS),
 			readMessages,
 			git,
 			summary: (session, messages) => summarizeWithModel(currentCtx, session, messages),
