@@ -175,3 +175,60 @@ pi -e ./extensions/pi-sessions --no-session --no-tools \
   -p "Reply with only the repo path from #feature-db-orm"
 # observed stdout: /repo/backend
 ```
+
+## 8. Blocking-summary injection proof (recorded 2026-09-23)
+
+Section 7 ran with `summaryMode: "off"`, so the blocking summary path was never part of
+the live proof: a digest that carried `Handoff unavailable: …` would have passed it just
+the same. This run leaves the default (`"blocking"`) on and asserts the summary itself.
+The config deliberately has no `extraRoots`, because the root already is the fixtures
+directory — a second spelling of it would only re-prove the dedupe from section 1.
+
+```bash
+TMP=$(mktemp -d)
+printf '{"summaryMode":"blocking"}' > "$TMP/config.json"
+
+# 1. Discriminating run, default model, no saved session
+PI_SESSIONS_ROOT="$PWD/tests/fixtures/sessions" PI_SESSIONS_CONFIG="$TMP/config.json" \
+pi -e ./extensions/pi-sessions --no-session --no-tools \
+  -p "Reply with only the repo path from #feature-db-orm"
+# observed stdout: /repo/backend
+
+# 2. Persistence assertion: a real summary reached the digest
+PI_SESSIONS_ROOT="$PWD/tests/fixtures/sessions" PI_SESSIONS_CONFIG="$TMP/config.json" \
+pi -e ./extensions/pi-sessions --session-dir "$TMP/ref" --no-tools \
+  -p "Reply with only the repo path from #feature-db-orm"
+# observed stdout: /repo/backend
+REF=$(find "$TMP/ref" -name '*.jsonl')
+grep -c '"customType":"pi-sessions-reference"' "$REF"
+# observed: 1
+
+grep -o 'Handoff: [^"]\{1,400\}' "$REF" | head -1
+# observed: Handoff: Accomplished: ORM layer for orders table requested, start
+#   acknowledged, tool returned ok; migrations requested, assistant replied Done.
+
+grep -o 'Handoff unavailable[^"]*' "$REF" || echo "no degraded handoff (correct)"
+# observed: no degraded handoff (correct)
+
+grep -o '</referenced-session>' "$REF" | wc -l   # observed: 1
+
+# 3. Control: an issue number injects nothing, with summaries still blocking
+PI_SESSIONS_ROOT="$PWD/tests/fixtures/sessions" PI_SESSIONS_CONFIG="$TMP/config.json" \
+pi -e ./extensions/pi-sessions --session-dir "$TMP/ctl" --no-tools \
+  -p "Reply with only the number in issue #42"
+# observed stdout: 42
+grep -rl '"customType":"pi-sessions-reference"' "$TMP/ctl" || echo "no reference block (correct)"
+# observed: no reference block (correct)
+```
+
+`Handoff:` carries the model's summary text; a failed call writes
+`Handoff unavailable: <reason>` instead, so the assertion above is exactly the difference
+between a working and a degraded summary. The answer is written to
+`~/.pi/agent/pi-sessions-cache/` (one `.md` file, keyed by session id, mtime, size, and
+model), and a second reference to the same session serves it without a model call.
+
+The model call must pass `sessionId`: pi-ai's opencode provider derives its
+`x-opencode-session` routing header from it, and without it the API answers
+`400 MissingSessionID` with an empty message, which degrades every blocking summary to
+`Handoff unavailable: summary model returned empty text` while the run still looks
+convincing.
