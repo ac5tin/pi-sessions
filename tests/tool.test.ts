@@ -122,6 +122,46 @@ test("an ambiguous note offers tokens that resolve, including unnamed UUID sessi
 	assert.deepEqual(new Set(resolvedPaths), new Set([alpha.path, beta.path]));
 });
 
+test("ambiguity tokens are computed against the full index, not the candidate subset", async () => {
+	// `#abcd` matches alpha and beta by id, so the note's collision universe must still hold
+	// gamma: it shares alpha's slug and repo, so a token built from the subset alone
+	// (`#shared/fix-auth`) is ambiguous against the full index and leads nowhere.
+	const alpha: IndexedSession = {
+		...backend,
+		path: "/sessions/alpha.jsonl",
+		id: "abcd1111-0000-4000-8000-000000000001",
+		name: "fix-auth",
+		cwd: "/repo/shared",
+	};
+	const beta: IndexedSession = {
+		...backend,
+		path: "/sessions/beta.jsonl",
+		id: "abcd2222-0000-4000-8000-000000000002",
+		name: "fix-auth",
+		cwd: "/repo/other",
+	};
+	const gamma: IndexedSession = {
+		...backend,
+		path: "/sessions/gamma.jsonl",
+		id: "eeee3333-0000-4000-8000-000000000003",
+		name: "fix-auth",
+		cwd: "/repo/shared",
+	};
+	const tool = createSessionReadTool(deps({ sessions: () => [alpha, beta, gamma] }));
+	const note = body(await tool.execute("id", { ref: "abcd", mode: "digest" }));
+	assert.ok(note.includes("ambiguous"), note);
+
+	const offered = [...note.slice(note.indexOf("Candidates: ")).matchAll(/(#[A-Za-z0-9._/-]+) \(/g)].map((m) => m[1]!);
+	assert.equal(offered.length, 2, offered.join(", "));
+	const resolvedPaths: string[] = [];
+	for (const token of offered) {
+		const details = resultDetails(await tool.execute("id", { ref: token, mode: "digest" }));
+		assert.equal(details.resolved, true, `${token} must resolve`);
+		resolvedPaths.push(details.sessionPath!);
+	}
+	assert.deepEqual(new Set(resolvedPaths), new Set([alpha.path, beta.path]));
+});
+
 test("the candidate list says how many were omitted", async () => {
 	const many: IndexedSession[] = Array.from({ length: 7 }, (_, index) => ({
 		...backend,

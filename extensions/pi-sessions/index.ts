@@ -182,11 +182,13 @@ export default function (pi: ExtensionAPI): void {
 				continue;
 			}
 			if (resolution.kind === "ambiguous") {
+				// `indexed` is the full index; `resolution.candidates` is a subset, so a token built
+				// from it can be ambiguous against a session outside the subset and lead nowhere.
 				const choices = sortRecent(resolution.candidates)
 					.slice(0, 5)
 					.map(
 						(candidate) =>
-							`${neutralizeAttribute(referenceToken(candidate, resolution.candidates))} (${neutralizeAttribute(candidate.cwd)})`,
+							`${neutralizeAttribute(referenceToken(candidate, indexed))} (${neutralizeAttribute(candidate.cwd)})`,
 					)
 					.join("; ");
 				notes.push(`${label} is ambiguous. Candidates: ${choices}`);

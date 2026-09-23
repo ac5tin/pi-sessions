@@ -92,7 +92,11 @@ export function createSessionReadTool(deps: ToolDeps) {
 				);
 			}
 
-			const resolution = resolveReference(ref, deps.sessions());
+			// Resolve and tokenize against one snapshot of the full index. The candidate list is a
+			// subset of it, so a token built from the subset can be ambiguous against a session
+			// outside it and lead nowhere.
+			const universe = deps.sessions();
+			const resolution = resolveReference(ref, universe);
 			if (resolution.kind === "missing") {
 				return text(`${header("(none)", "(none)")}\nNo session matches #${neutralizeAttribute(ref)}.`, { mode, resolved: false });
 			}
@@ -102,7 +106,7 @@ export function createSessionReadTool(deps: ToolDeps) {
 					shown
 						.map(
 							(session) =>
-								`${neutralizeAttribute(referenceToken(session, resolution.candidates))} (${neutralizeAttribute(session.cwd)})`,
+								`${neutralizeAttribute(referenceToken(session, universe))} (${neutralizeAttribute(session.cwd)})`,
 						)
 						.join("; ") + (resolution.candidates.length > 5 ? `; and ${resolution.candidates.length - 5} more` : "");
 				return text(
@@ -117,7 +121,7 @@ export function createSessionReadTool(deps: ToolDeps) {
 
 			const session = resolution.session;
 			const details = { mode, resolved: true, sessionPath: session.path, repo: session.cwd };
-			const token = neutralizeAttribute(referenceToken(session, deps.sessions()));
+			const token = neutralizeAttribute(referenceToken(session, universe));
 			const paths = header(session.path, session.cwd);
 
 			let messages: SessionMessage[];
