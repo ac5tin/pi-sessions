@@ -7,6 +7,12 @@ const ACTIVE_WINDOW_MS = 2 * 60 * 1000;
 const LABEL_CHARS = 60;
 const TOKEN_PATTERN = /(?:^|[\s(])#([A-Za-z0-9._/-]*)$/;
 
+/** Rows the picker may use: the terminal height less room for the prompt and the notify. */
+export function pickerRows(rows: number | undefined): number {
+	const height = rows && rows > 0 ? rows : 24;
+	return Math.max(5, height - 8);
+}
+
 export interface AutocompleteDeps {
 	/** Sessions offered in the dropdown — already filtered to human sessions. */
 	sessions: () => IndexedSession[];

@@ -4,7 +4,7 @@ import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
-import { createSessionAutocompleteProvider, formatSessionItem } from "./autocomplete.ts";
+import { createSessionAutocompleteProvider, formatSessionItem, pickerRows } from "./autocomplete.ts";
 import { cacheDir, loadConfig, sessionsRoot, type Config } from "./config.ts";
 import { buildDigest, neutralizeAttribute } from "./digest.ts";
 import { collectGitInfo } from "./git-info.ts";
@@ -79,7 +79,7 @@ async function readMessages(session: IndexedSession): Promise<SessionMessage[]> 
 	// pi repairs a file whose last line is partial by appending a newline when it opens it
 	// (session-manager.js loadEntriesFromFile). Referencing a session that another agent is
 	// still writing would then split its in-flight line, so open a copy instead. The index
-	// skips files over 50 MB, so the copy is bounded.
+	// caps files at MAX_FILE_BYTES, so the copy is bounded.
 	if (await endsWithNewline(session.path)) return openMessages(session.path);
 	const dir = await mkdtemp(join(tmpdir(), "pi-sessions-open-"));
 	try {
@@ -300,7 +300,7 @@ export default function (pi: ExtensionAPI): void {
 				seen.add(label);
 				return { label, session };
 			});
-			const shown = items.slice(0, 50);
+			const shown = items.slice(0, pickerRows(process.stdout.rows));
 			if (items.length > shown.length) {
 				ctx.ui.notify(
 					`pi-sessions: showing ${shown.length} of ${items.length} sessions — type # in the editor to filter`,

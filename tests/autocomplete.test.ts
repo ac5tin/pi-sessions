@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { AutocompleteItem, AutocompleteProvider } from "@earendil-works/pi-tui";
-import { createSessionAutocompleteProvider, formatSessionItem, relativeLabel } from "../extensions/pi-sessions/autocomplete.ts";
+import { createSessionAutocompleteProvider, formatSessionItem, pickerRows, relativeLabel } from "../extensions/pi-sessions/autocomplete.ts";
 import { resolveReference } from "../extensions/pi-sessions/reference.ts";
 import type { IndexedSession } from "../extensions/pi-sessions/types.ts";
 
@@ -46,6 +46,13 @@ test("relativeLabel is compact and human readable", () => {
 	assert.equal(relativeLabel(2_000_000 - 12 * 60_000, 2_000_000), "12 min ago");
 	assert.equal(relativeLabel(2_000_000 - 5 * 3_600_000, 2_000_000), "5 h ago");
 	assert.equal(relativeLabel(2_000_000 - 3 * 86_400_000, 2_000_000), "3 d ago");
+});
+
+test("pickerRows leaves room for the prompt and the notify and floors at five", () => {
+	assert.equal(pickerRows(undefined), 16, "a non-TTY has no height: the 24-row default applies");
+	assert.equal(pickerRows(60), 52);
+	assert.equal(pickerRows(5), 5, "a tiny terminal floors the picker at five rows");
+	assert.equal(pickerRows(1), 5);
 });
 
 test("formatSessionItem shows the name as label and repo, age, size, state as description", () => {

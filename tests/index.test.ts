@@ -6,6 +6,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { AutocompleteItem, AutocompleteProvider } from "@earendil-works/pi-tui";
+import { pickerRows } from "../extensions/pi-sessions/autocomplete.ts";
 import { DEFAULT_CONFIG } from "../extensions/pi-sessions/config.ts";
 import { buildDigest } from "../extensions/pi-sessions/digest.ts";
 
@@ -444,7 +445,7 @@ test("the /sessions command disambiguates identical labels so the picked session
 	}
 });
 
-test("the /sessions command caps the picker at fifty and says how many are hidden", async () => {
+test("the /sessions command caps the picker to the terminal height and says how many are hidden", async () => {
 	const extraRoot = mkdtempSync(join(tmpdir(), "pi-sessions-cap-"));
 	const projectDir = join(extraRoot, "--repo-many--");
 	mkdirSync(projectDir, { recursive: true });
@@ -478,9 +479,11 @@ test("the /sessions command caps the picker at fifty and says how many are hidde
 		assert.ok(command);
 		await command.handler("", ctx);
 
-		assert.equal(offered, 50);
+		// stdout is a pipe under the test runner, so pickerRows falls back to the 24-row default.
+		const limit = pickerRows(process.stdout.rows);
+		assert.equal(offered, limit);
 		assert.ok(
-			notifications.some((message) => message.includes("showing 50 of")),
+			notifications.some((message) => message.includes(`showing ${limit} of`)),
 			notifications.join(" | "),
 		);
 	} finally {
