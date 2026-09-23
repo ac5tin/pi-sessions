@@ -205,7 +205,7 @@ path. The summary cache always lives in `~/.pi/agent/pi-sessions-cache/`.
 
 - 6000 tokens per digest, 12000 hard maximum.
 - 3 references per prompt: 18,000 tokens worst case per turn.
-- Session files larger than 512 MB are skipped (the largest a JS string can hold); appended turns are read incrementally.
+- Session files larger than the V8 string limit (~512 MB) cannot be read whole, so a file that large is skipped on first sight and reported by `/pi-sessions`. A session that was indexed before it grew past the limit keeps being indexed from its appended bytes.
 - 120 s summary timeout; summary input 80,000 characters, output 4,000 characters.
 
 ## Privacy

@@ -1,12 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { constants as bufferConstants } from "node:buffer";
 import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DEFAULT_CONFIG, resolveConfig } from "../extensions/pi-sessions/config.ts";
 import { resolveReference } from "../extensions/pi-sessions/reference.ts";
-import { expandHome, isSubagent, parseSessionFile, SessionStore, textOfContent } from "../extensions/pi-sessions/store.ts";
+import { expandHome, isSubagent, MAX_FILE_BYTES, parseSessionFile, SessionStore, textOfContent } from "../extensions/pi-sessions/store.ts";
 
 const FIXTURES = fileURLToPath(new URL("./fixtures/sessions", import.meta.url));
 
@@ -123,6 +124,120 @@ test("refresh resumes an appended session and updates its name and count", async
 	assert.equal(await store.refresh(), 1);
 	assert.equal(store.get(file)?.name, "renamed live");
 	assert.equal(store.get(file)?.messageCount, 1);
+	rmSync(root, { recursive: true, force: true });
+});
+
+test("the file cap is V8's string limit, not a hand-written constant", () => {
+	assert.equal(MAX_FILE_BYTES, bufferConstants.MAX_STRING_LENGTH);
+	assert.notEqual(MAX_FILE_BYTES, 512 * 1024 * 1024, "the hardcoded constant was 24 bytes over the real limit");
+});
+
+test("a larger in-place rewrite is re-parsed, not resumed as an append", async () => {
+	const root = mkdtempSync(join(tmpdir(), "pi-sessions-rewrite-"));
+	const projectDir = join(root, "--repo-rewrite--");
+	mkdirSync(projectDir, { recursive: true });
+	const file = join(projectDir, "migrated.jsonl");
+	const line = (index: number, content: string) =>
+		JSON.stringify({
+			type: "message",
+			id: `m${index}`,
+			parentId: index === 1 ? null : `m${index - 1}`,
+			message: { role: "user", content },
+		});
+	writeFileSync(
+		file,
+		[
+			JSON.stringify({ type: "session", version: 3, id: "old-0001", cwd: "/repo/old" }),
+			...[1, 2, 3, 4, 5].map((n) => line(n, `turn ${n}`)),
+		].join("\n") + "\n",
+	);
+	utimesSync(file, 1_000, 1_000);
+	const store = new SessionStore({ root });
+	assert.equal(await store.refresh(), 1);
+	assert.equal(store.get(file)?.id, "old-0001");
+	assert.equal(store.get(file)?.messageCount, 5);
+	const before = statSync(file).size;
+
+	// Exactly what pi's migrateSessionEntries does: rewrite the same path in place with a new
+	// header id, a new name and FEWER messages, but more bytes than before. Growth alone must
+	// not be mistaken for an append.
+	writeFileSync(
+		file,
+		[
+			JSON.stringify({ type: "session", version: 1, id: "new-9999", cwd: "/repo/new" }),
+			JSON.stringify({ type: "session_info", id: "n1", name: "rewritten" }),
+			line(1, "x".repeat(400)),
+			line(2, "y".repeat(400)),
+		].join("\n") + "\n",
+	);
+	utimesSync(file, 2_000, 2_000);
+	assert.ok(statSync(file).size > before, "the rewrite must be larger than the old file");
+
+	assert.equal(await store.refresh(), 1);
+	assert.equal(store.get(file)?.id, "new-9999", "the new header must win over the old parse state");
+	assert.equal(store.get(file)?.cwd, "/repo/new");
+	assert.equal(store.get(file)?.name, "rewritten");
+	assert.equal(store.get(file)?.messageCount, 2);
+	rmSync(root, { recursive: true, force: true });
+});
+
+test("an indexed session survives growing past the byte cap", async () => {
+	const root = mkdtempSync(join(tmpdir(), "pi-sessions-cap-cross-"));
+	const projectDir = join(root, "--repo-cap--");
+	mkdirSync(projectDir, { recursive: true });
+	const file = join(projectDir, "growing.jsonl");
+	writeFileSync(file, '{"type":"session","version":3,"id":"cap1","cwd":"/repo/cap"}\n');
+	const store = new SessionStore({ root, maxFileBytes: 200 });
+	assert.equal(await store.refresh(), 1);
+	assert.equal(store.get(file)?.name, undefined);
+
+	// The file outgrows the cap; only the delta must fit the read limit, so the new bytes are
+	// indexed instead of the entry being deleted.
+	appendFileSync(
+		file,
+		'{"type":"session_info","id":"n1","name":"grown past the cap"}\n{"type":"message","id":"a","parentId":"n1","message":{"role":"user","content":"still here"}}\n',
+	);
+	assert.ok(statSync(file).size > 200, "the file must cross the injected cap");
+	assert.equal(await store.refresh(), 1);
+	assert.equal(store.size, 1, "an indexed session must not vanish when it crosses the cap");
+	assert.equal(store.get(file)?.name, "grown past the cap");
+	assert.equal(store.get(file)?.messageCount, 1);
+	rmSync(root, { recursive: true, force: true });
+});
+
+test("a file too large to read with no previous entry is reported as skipped", async () => {
+	const root = mkdtempSync(join(tmpdir(), "pi-sessions-skipped-"));
+	const projectDir = join(root, "--repo-skipped--");
+	mkdirSync(projectDir, { recursive: true });
+	const file = join(projectDir, "huge.jsonl");
+	writeFileSync(file, `{"type":"session","version":3,"id":"huge1","cwd":"/repo/huge"}\n{"x":"${"y".repeat(400)}"}\n`);
+	const store = new SessionStore({ root, maxFileBytes: 200 });
+	assert.equal(await store.refresh(), 0);
+	assert.equal(store.size, 0);
+	assert.equal(store.skipped.length, 1, "an oversized file must be reported, not silently dropped");
+	assert.equal(store.skipped[0]?.path, file);
+	assert.ok((store.skipped[0]?.bytes ?? 0) > 200);
+	assert.ok(store.skipped[0]?.reason.includes("read limit"), store.skipped[0]?.reason);
+	rmSync(root, { recursive: true, force: true });
+});
+
+test("an append reads only the new bytes, not the whole file", async () => {
+	const root = mkdtempSync(join(tmpdir(), "pi-sessions-bytes-"));
+	const projectDir = join(root, "--repo-bytes--");
+	mkdirSync(projectDir, { recursive: true });
+	const file = join(projectDir, "perf.jsonl");
+	const body = `{"type":"message","id":"m","parentId":null,"message":{"role":"user","content":"${"x".repeat(50_000)}"}}\n`;
+	writeFileSync(file, '{"type":"session","version":3,"id":"perf1","cwd":"/repo/perf"}\n' + body);
+	const store = new SessionStore({ root });
+	assert.equal(await store.refresh(), 1);
+	assert.equal(store.get(file)?.messageCount, 1);
+
+	const before = store.bytesRead;
+	appendFileSync(file, '{"type":"message","id":"m2","parentId":"m","message":{"role":"user","content":"more"}}\n');
+	assert.equal(await store.refresh(), 1);
+	const delta = store.bytesRead - before;
+	assert.ok(delta < 10_000, `an append must not re-read the whole ~50 KB file (read ${delta} bytes)`);
+	assert.equal(store.get(file)?.messageCount, 2);
 	rmSync(root, { recursive: true, force: true });
 });
 

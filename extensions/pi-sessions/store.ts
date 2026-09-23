@@ -1,3 +1,4 @@
+import { constants as bufferConstants } from "node:buffer";
 import { open, readdir, readFile, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -5,12 +6,15 @@ import type { Config } from "./config.ts";
 import type { IndexedSession } from "./types.ts";
 
 /**
- * The real ceiling is V8: a JS string cannot exceed about 512 MB, so a bigger file cannot be
- * read whole at all. Appends now cost only the new bytes, so the old 50 MB cap bought nothing;
- * this stays as the guard against a readFile that cannot succeed.
+ * The real ceiling is V8: a JS string cannot exceed `MAX_STRING_LENGTH` (536870888 on Node
+ * 24), so a bigger file cannot be read whole at all. Appends cost only the new bytes, so the
+ * old 50 MB cap bought nothing; this stays as the guard against a readFile that cannot succeed.
  */
-export const MAX_FILE_BYTES = 512 * 1024 * 1024;
+export const MAX_FILE_BYTES = bufferConstants.MAX_STRING_LENGTH;
 const MAX_FIRST_MESSAGE = 400;
+/** How much of the consumed prefix is remembered to prove an append did not rewrite it. */
+const HEADER_WITNESS_BYTES = 1024;
+const TAIL_WITNESS_BYTES = 64;
 const SUBAGENT_NAME = /^subagent-/i;
 const SUBAGENT_TAGGED = /^[A-Za-z][\w-]*#[0-9a-f]{8}$/;
 
@@ -58,10 +62,18 @@ function tryParse(line: string): Record<string, unknown> | null {
 	}
 }
 
-/** Reads [start, end) as UTF-8 text. Returns null when the read fails. */
-async function readRange(path: string, start: number, end: number): Promise<string | null> {
+/**
+ * Reads [start, end) into a Buffer, looping until filled or EOF. `complete` is false when the
+ * file ended early: the caller must not commit the stat it measured, or the unread gap would
+ * stay unparsed until the next write. Returns null when the read fails.
+ */
+async function readRange(
+	path: string,
+	start: number,
+	end: number,
+): Promise<{ bytes: Buffer; complete: boolean; read: number } | null> {
 	const length = end - start;
-	if (length <= 0) return "";
+	if (length <= 0) return { bytes: Buffer.alloc(0), complete: true, read: 0 };
 	const handle = await open(path, "r").catch(() => null);
 	if (handle === null) return null;
 	try {
@@ -72,7 +84,7 @@ async function readRange(path: string, start: number, end: number): Promise<stri
 			if (bytesRead === 0) break;
 			offset += bytesRead;
 		}
-		return buffer.toString("utf8", 0, offset);
+		return { bytes: buffer.subarray(0, offset), complete: offset === length, read: offset };
 	} catch {
 		return null;
 	} finally {
@@ -174,14 +186,40 @@ export interface StoreOptions {
 	maxFileBytes?: number;
 }
 
+/** A file the last walk could not read and had no previous entry to keep. */
+export interface SkippedFile {
+	path: string;
+	bytes: number;
+	reason: string;
+}
+
 /** One indexed file: the last entry plus what is needed to resume an append. */
 interface CachedSession {
 	mtimeMs: number;
 	size: number;
 	/** Byte offset just past the last complete line consumed from the file. */
 	parsedBytes: number;
+	/** First bytes of the consumed prefix, to prove the header did not change. */
+	headerWitness: Buffer;
+	/** Last bytes of the consumed prefix, ending on the line boundary consume stopped at. */
+	tailWitness: Buffer;
 	state: ParseState;
 	entry: IndexedSession;
+}
+
+/**
+ * The two small witnesses stored with a cache entry: the first 1 KB and the last 64 bytes of
+ * the consumed prefix. On growth they are re-read from the file; a difference means the file
+ * was rewritten in place and the new bytes cannot be appended to the old parse state.
+ */
+function witnessesFor(text: string, consumed: number): { header: Buffer; tail: Buffer } {
+	const prefix = text.slice(0, consumed);
+	const header = Buffer.from(prefix.slice(0, HEADER_WITNESS_BYTES), "utf8").subarray(0, HEADER_WITNESS_BYTES);
+	// 256 characters encode to at least 64 bytes (UTF-8 is at most 4 bytes per character), so
+	// the last 64 bytes are always inside this slice without encoding the whole prefix.
+	const tailChars = prefix.slice(Math.max(0, prefix.length - 256));
+	const tailBytes = Buffer.from(tailChars, "utf8");
+	return { header, tail: tailBytes.subarray(Math.max(0, tailBytes.length - TAIL_WITNESS_BYTES)) };
 }
 
 /**
@@ -198,6 +236,8 @@ export class SessionStore {
 	readonly #maxFileBytes: number;
 	#cache = new Map<string, CachedSession>();
 	#rootReport: RootReport = { walked: 0, failed: [] };
+	#skipped: SkippedFile[] = [];
+	#bytesRead = 0;
 	#inflight: Promise<number> | null = null;
 	#refreshedAt = 0;
 
@@ -214,6 +254,36 @@ export class SessionStore {
 	/** What the last walk saw: how many distinct roots it read, and which roots failed. */
 	get rootReport(): RootReport {
 		return { walked: this.#rootReport.walked, failed: this.#rootReport.failed.map((failure) => ({ ...failure })) };
+	}
+
+	/** Files the last walk skipped because they could not be read and had no previous entry. */
+	get skipped(): SkippedFile[] {
+		return this.#skipped.map((file) => ({ ...file }));
+	}
+
+	/**
+	 * Total bytes read from disk since construction. Monotonic and cheap: tests pin that an
+	 * append reads only the delta, and `/pi-sessions` reports it next to the re-parsed count.
+	 */
+	get bytesRead(): number {
+		return this.#bytesRead;
+	}
+
+	/**
+	 * True when the file still starts with the same header and ends the consumed prefix
+	 * identically. The tail's last byte is the line boundary `consume` stopped at, so a
+	 * rewrite that does not preserve it cannot be resumed either.
+	 */
+	async #prefixUnchanged(file: string, previous: CachedSession): Promise<boolean> {
+		const header = await readRange(file, 0, previous.headerWitness.length);
+		if (header === null || !header.complete) return false;
+		this.#bytesRead += header.read;
+		if (!header.bytes.equals(previous.headerWitness)) return false;
+		const tailStart = previous.parsedBytes - previous.tailWitness.length;
+		const tail = await readRange(file, tailStart, previous.parsedBytes);
+		if (tail === null || !tail.complete) return false;
+		this.#bytesRead += tail.read;
+		return tail.bytes.equals(previous.tailWitness) && tail.bytes[tail.bytes.length - 1] === 0x0a;
 	}
 
 	async #walk(): Promise<string[]> {
@@ -288,25 +358,39 @@ export class SessionStore {
 		for (const key of [...this.#cache.keys()]) {
 			if (!present.has(key)) this.#cache.delete(key);
 		}
+		this.#skipped = [];
 
 		let parsed = 0;
 		for (const file of files) {
 			const meta = await stat(file).catch(() => null);
-			if (!meta || !meta.isFile() || meta.size > this.#maxFileBytes) {
-				this.#cache.delete(file);
-				continue;
-			}
+			// A file that vanished or turned into a directory is not a session any more. A file
+			// that was indexed before keeps its last good entry rather than disappearing.
+			if (!meta || !meta.isFile()) continue;
 			const previous = this.#cache.get(file);
 			if (previous && previous.mtimeMs === meta.mtimeMs && previous.size === meta.size) continue;
 
+			const overCap = meta.size > this.#maxFileBytes;
+			const delta = previous ? meta.size - previous.parsedBytes : 0;
 			// An appended file resumes from the last complete line: a live 20 MB session must not
-			// be re-read whole on every throttled dropdown refresh. A new file, a shrunken file,
-			// or an in-place rewrite (same size, new mtime) still takes the full parse below.
-			if (previous && meta.size > previous.size) {
+			// be re-read whole on every throttled dropdown refresh. Only the DELTA must fit the
+			// read limit, so a file that outgrew the cap keeps being indexed. A new file, a
+			// shrunken file, or an in-place rewrite (same size, new mtime) takes the full parse.
+			// A larger rewrite must also prove its prefix unchanged, or its new bytes would be
+			// consumed into the old parse state and leave a sticky wrong id, name and count.
+			if (
+				previous &&
+				meta.size > previous.size &&
+				delta <= this.#maxFileBytes &&
+				(await this.#prefixUnchanged(file, previous))
+			) {
 				const appended = await readRange(file, previous.parsedBytes, meta.size);
-				if (appended === null) continue; // a read failure keeps the previous entry
-				const consumed = consume(previous.state, appended, MAX_FIRST_MESSAGE);
-				previous.parsedBytes += consumedBytes(appended, consumed);
+				// A short read means the file is still being written: do not commit the stat, or a
+				// later file that happens to match it would keep the unread gap forever.
+				if (appended === null || !appended.complete) continue;
+				this.#bytesRead += appended.read;
+				const text = appended.bytes.toString("utf8");
+				const consumed = consume(previous.state, text, MAX_FIRST_MESSAGE);
+				previous.parsedBytes += consumedBytes(text, consumed);
 				// Update the cached meta even when the new bytes end in a partial line, so that
 				// line is not re-read until more bytes arrive.
 				previous.mtimeMs = meta.mtimeMs;
@@ -319,16 +403,40 @@ export class SessionStore {
 				continue;
 			}
 
-			const text = await readFile(file, "utf8").catch(() => null);
-			if (text === null) continue;
+			// The whole file must be read as one string; a file over the cap cannot be. It is
+			// skipped and reported, but only when there is no previous entry to keep.
+			if (overCap) {
+				if (!previous) {
+					this.#skipped.push({
+						path: file,
+						bytes: meta.size,
+						reason: `over the ${this.#maxFileBytes}-byte read limit`,
+					});
+				}
+				continue;
+			}
+
+			let readError: unknown;
+			const text = await readFile(file, "utf8").catch((error: unknown) => {
+				readError = error;
+				return null;
+			});
+			if (text === null) {
+				if (!previous) this.#skipped.push({ path: file, bytes: meta.size, reason: errorMessage(readError) });
+				continue;
+			}
+			this.#bytesRead += meta.size;
 			const state = createState();
 			const consumed = consume(state, text, MAX_FIRST_MESSAGE);
 			const entry = toEntry(state, file, { mtimeMs: meta.mtimeMs, size: meta.size });
 			if (entry) {
+				const witnesses = witnessesFor(text, consumed);
 				this.#cache.set(file, {
 					mtimeMs: meta.mtimeMs,
 					size: meta.size,
 					parsedBytes: consumedBytes(text, consumed),
+					headerWitness: witnesses.header,
+					tailWitness: witnesses.tail,
 					state,
 					entry,
 				});
