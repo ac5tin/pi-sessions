@@ -56,7 +56,9 @@ least one resolvable reference, the injected block states the ambiguity and list
 candidates; it never picks one. A token that matches nothing is ordinary text, so `#42`
 stays an issue number. If no reference in the prompt resolves, nothing is injected at
 all — but a token that looks like a session reference (it contains `-` or `/`) raises a
-warning in the UI, so a dead root or a bad token is visible instead of silent.
+warning in the UI, so a dead root or a bad token is visible instead of silent. A token
+that resolves but whose file cannot be read injects a note saying so, and raises the same
+warning, even when it is the prompt's only reference.
 
 ### The `#` dropdown
 
@@ -149,7 +151,8 @@ Parameters: `ref` (required), `mode`, `query` (used by `relevant`), and `maxToke
 (500–12000; defaults to `digestTokens` and is clamped to `maxDigestTokens`; `digest` and
 `summary` ignore it). Every result starts with `session:` and `repo:` lines naming the
 session file and its repository, so follow-up reads can use pi's normal tools. The tool
-is read-only and treats other sessions' content as untrusted data.
+is read-only and treats other sessions' content as untrusted data; every result that
+carries session text ends with the same untrusted-data line as the digest.
 
 Subagent sessions stay readable here by id even though the dropdown hides them.
 
@@ -211,7 +214,8 @@ Sessions are read from local files under `~/.pi/agent/sessions/` (plus `extraRoo
 this machine only. Nothing is uploaded. The only network traffic is the handoff summary:
 that transcript goes to the model provider you already configured in pi. The extension
 only ever writes its own summary cache under `~/.pi/agent/pi-sessions-cache/`; it never
-modifies another session. Git queries run locally and read-only.
+modifies another session. A session file that does not end in a newline is opened through
+a temporary copy, because opening it directly would make pi repair it. Git queries run locally and read-only.
 
 ## How it works
 

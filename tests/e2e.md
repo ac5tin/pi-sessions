@@ -104,7 +104,9 @@ repository, reference it by id prefix:
 ```
 
 Expect: a digest appears with `state="active"`, and no error. The file is being appended
-to while it is read, so a partially written final line must be skipped, not fatal.
+to while it is read, so a partially written final line must be skipped, not fatal — and
+the file must be left byte-identical, because a file without a trailing newline is read
+through a temporary copy rather than repaired in place.
 
 ## 5. Dropdown
 
