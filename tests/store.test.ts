@@ -202,6 +202,14 @@ test("an indexed session survives growing past the byte cap", async () => {
 	assert.equal(store.size, 1, "an indexed session must not vanish when it crosses the cap");
 	assert.equal(store.get(file)?.name, "grown past the cap");
 	assert.equal(store.get(file)?.messageCount, 1);
+
+	// One more append after the cap was crossed: the resume state must keep advancing, or the
+	// entry freezes with a stale tail witness and the new message is silently dropped.
+	appendFileSync(file, '{"type":"message","id":"b","parentId":"a","message":{"role":"user","content":"and more"}}\n');
+	const resumedAgain = await store.refresh();
+	assert.equal(store.get(file)?.messageCount, 2, "a session over the cap must keep indexing appends");
+	assert.equal(resumedAgain, 1);
+	assert.equal(store.skipped.length, 0, "a resumed over-cap append must not be reported as skipped");
 	rmSync(root, { recursive: true, force: true });
 });
 
@@ -238,6 +246,32 @@ test("an append reads only the new bytes, not the whole file", async () => {
 	const delta = store.bytesRead - before;
 	assert.ok(delta < 10_000, `an append must not re-read the whole ~50 KB file (read ${delta} bytes)`);
 	assert.equal(store.get(file)?.messageCount, 2);
+	rmSync(root, { recursive: true, force: true });
+});
+
+test("a second append after a resume still reads only the new bytes", async () => {
+	const root = mkdtempSync(join(tmpdir(), "pi-sessions-bytes2-"));
+	const projectDir = join(root, "--repo-bytes2--");
+	mkdirSync(projectDir, { recursive: true });
+	const file = join(projectDir, "perf.jsonl");
+	const body = `{"type":"message","id":"m","parentId":null,"message":{"role":"user","content":"${"x".repeat(50_000)}"}}\n`;
+	writeFileSync(file, '{"type":"session","version":3,"id":"perf2","cwd":"/repo/perf"}\n' + body);
+	const store = new SessionStore({ root });
+	assert.equal(await store.refresh(), 1);
+	assert.equal(store.get(file)?.messageCount, 1);
+
+	appendFileSync(file, '{"type":"message","id":"m2","parentId":"m","message":{"role":"user","content":"more"}}\n');
+	assert.equal(await store.refresh(), 1);
+	assert.equal(store.get(file)?.messageCount, 2);
+
+	// The resume must move the tail witness with parsedBytes: after one successful resume a
+	// witness left at the old offset fails the next prefix check and re-reads the whole file.
+	const before = store.bytesRead;
+	appendFileSync(file, '{"type":"message","id":"m3","parentId":"m2","message":{"role":"user","content":"again"}}\n');
+	assert.equal(await store.refresh(), 1);
+	const delta = store.bytesRead - before;
+	assert.ok(delta < 10_000, `a second append must not re-read the whole ~50 KB file (read ${delta} bytes)`);
+	assert.equal(store.get(file)?.messageCount, 3);
 	rmSync(root, { recursive: true, force: true });
 });
 

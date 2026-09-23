@@ -390,7 +390,18 @@ export class SessionStore {
 				this.#bytesRead += appended.read;
 				const text = appended.bytes.toString("utf8");
 				const consumed = consume(previous.state, text, MAX_FIRST_MESSAGE);
-				previous.parsedBytes += consumedBytes(text, consumed);
+				const consumedLength = consumedBytes(text, consumed);
+				if (consumedLength > 0) {
+					// The tail witness must end exactly where parsedBytes ends: #prefixUnchanged
+					// re-reads the last bytes ending at parsedBytes, so a witness left at the old
+					// offset fails the next prefix check and forces a full parse (or, over the cap,
+					// silently freezes the entry). The old witness is the tail of the old prefix,
+					// so merging it with the newly consumed bytes keeps the window at full width
+					// even when the append is shorter than TAIL_WITNESS_BYTES.
+					const merged = Buffer.concat([previous.tailWitness, appended.bytes.subarray(0, consumedLength)]);
+					previous.tailWitness = merged.subarray(Math.max(0, merged.length - TAIL_WITNESS_BYTES));
+					previous.parsedBytes += consumedLength;
+				}
 				// Update the cached meta even when the new bytes end in a partial line, so that
 				// line is not re-read until more bytes arrive.
 				previous.mtimeMs = meta.mtimeMs;
