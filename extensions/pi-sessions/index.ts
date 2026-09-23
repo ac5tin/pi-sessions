@@ -28,6 +28,14 @@ function errorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
 }
 
+/** Compact byte count for the diagnostic line. */
+function formatBytes(bytes: number): string {
+	if (bytes >= 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+	if (bytes >= 1024 * 1024) return `${Math.round(bytes / (1024 * 1024))} MB`;
+	if (bytes >= 1024) return `${Math.round(bytes / 1024)} KB`;
+	return `${bytes} B`;
+}
+
 /** A token that looks like a session reference rather than an issue number or a bare word. */
 function isSessionShaped(ref: string): boolean {
 	return ref.includes("-") || ref.includes("/");
@@ -300,14 +308,15 @@ export default function (pi: ExtensionAPI): void {
 				seen.add(label);
 				return { label, session };
 			});
-			const shown = items.slice(0, pickerRows(process.stdout.rows));
-			if (items.length > shown.length) {
-				ctx.ui.notify(
-					`pi-sessions: showing ${shown.length} of ${items.length} sessions — type # in the editor to filter`,
-					"info",
-				);
-			}
-			const picked = await ctx.ui.select("Insert a session reference", shown.map((item) => item.label));
+			const limit = pickerRows(process.stdout.rows);
+			const shown = items.slice(0, limit);
+			// The notice goes in the title: `notify` appends to the chat ABOVE the picker, so in
+			// regular render mode the user never sees it. The title is the first visible line.
+			const title =
+				items.length > shown.length
+					? `Insert a session reference (showing ${shown.length} of ${items.length} — type # to filter)`
+					: "Insert a session reference";
+			const picked = await ctx.ui.select(title, shown.map((item) => item.label));
 			if (!picked) return;
 			const chosen = shown.find((item) => item.label === picked);
 			if (!chosen) return;
@@ -335,9 +344,19 @@ export default function (pi: ExtensionAPI): void {
 				roots.failed.length > 0
 					? `; roots failed: ${roots.failed.map((failure) => `${failure.root} (${failure.reason})`).join(", ")}`
 					: "";
+			// A file that was skipped instead of indexed must be visible here: a silent skip is
+			// exactly what hid the oversized-session bug from the user for hours.
+			const skippedFiles = store.skipped;
+			const skipped =
+				skippedFiles.length > 0
+					? `; skipped ${skippedFiles.length}: ${skippedFiles
+							.slice(0, 3)
+							.map((file) => `${file.path} (${formatBytes(file.bytes)}, ${file.reason})`)
+							.join(", ")}${skippedFiles.length > 3 ? ` and ${skippedFiles.length - 3} more` : ""}`
+					: "";
 			ctx.ui.notify(
-				`pi-sessions: ${store.size} indexed, ${visible.length} visible across ${new Set(visible.map((s) => s.cwd)).size} repos (${parsed} re-parsed); roots walked: ${roots.walked}${failed}`,
-				failed ? "warning" : "info",
+				`pi-sessions: ${store.size} indexed, ${visible.length} visible across ${new Set(visible.map((s) => s.cwd)).size} repos (${parsed} re-parsed, ${formatBytes(store.bytesRead)} read); roots walked: ${roots.walked}${failed}${skipped}`,
+				failed || skipped ? "warning" : "info",
 			);
 		},
 	});

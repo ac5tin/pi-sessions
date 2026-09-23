@@ -449,7 +449,11 @@ test("the /sessions command caps the picker to the terminal height and says how 
 	const extraRoot = mkdtempSync(join(tmpdir(), "pi-sessions-cap-"));
 	const projectDir = join(extraRoot, "--repo-many--");
 	mkdirSync(projectDir, { recursive: true });
-	for (let index = 0; index < 51; index++) {
+	// More sessions than the cap, whatever the terminal height: on a tall terminal a count
+	// below the cap would make `min(rows, sessions)` accidentally equal the session count.
+	const limit = pickerRows(process.stdout.rows);
+	const created = limit + 5;
+	for (let index = 0; index < created; index++) {
 		writeFileSync(
 			join(projectDir, `session-${String(index).padStart(2, "0")}.jsonl`),
 			[
@@ -467,8 +471,10 @@ test("the /sessions command caps the picker to the terminal height and says how 
 		register(h.pi);
 		writeConfig({ summaryMode: "off", extraRoots: [extraRoot] });
 		let offered = 0;
+		let title = "";
 		const { ctx, notifications } = apiCtx({
-			select: async (_title, choices) => {
+			select: async (selectTitle, choices) => {
+				title = selectTitle;
 				offered = choices.length;
 				return choices[0];
 			},
@@ -479,12 +485,20 @@ test("the /sessions command caps the picker to the terminal height and says how 
 		assert.ok(command);
 		await command.handler("", ctx);
 
-		// stdout is a pipe under the test runner, so pickerRows falls back to the 24-row default.
-		const limit = pickerRows(process.stdout.rows);
-		assert.equal(offered, limit);
+		// The cap is min(terminal rows, sessions), and this test creates more sessions than the
+		// cap, so the cap is genuinely exercised on every terminal height.
+		const match = title.match(/showing (\d+) of (\d+)/);
+		assert.ok(match, title);
+		const shownCount = Number(match[1]);
+		const sessionCount = Number(match[2]);
+		assert.ok(sessionCount > pickerRows(process.stdout.rows), "the test must create more sessions than the cap");
+		assert.equal(offered, Math.min(pickerRows(process.stdout.rows), sessionCount));
+		assert.equal(offered, shownCount);
+		// The notice rides in the select title (the first visible line), not in `notify`, which
+		// the chat renders above the picker where the user cannot see it.
 		assert.ok(
-			notifications.some((message) => message.includes(`showing ${limit} of`)),
-			notifications.join(" | "),
+			!notifications.some((message) => message.includes("showing")),
+			`the cap notice must not be a notify: ${notifications.join(" | ")}`,
 		);
 	} finally {
 		rmSync(extraRoot, { recursive: true, force: true });
