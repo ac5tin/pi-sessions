@@ -103,34 +103,58 @@ test("referenceToken uses repo prefix only when the slug collides", () => {
 });
 
 test("every referenceToken resolves back to its own session", () => {
+	// The whole pipeline, not just the resolver: a token is inserted into a prompt, so the
+	// extractor must read it back whole before resolution can even see it.
+	const roundTrip = (source: IndexedSession, universe: IndexedSession[], expect?: string): string => {
+		const token = referenceToken(source, universe);
+		const extracted = extractReferences(token)[0];
+		assert.equal(extracted, token.slice(1), `the extractor read #${extracted} from ${token}`);
+		if (expect !== undefined) assert.equal(token, expect);
+		const hit = resolveReference(extracted!, universe);
+		assert.equal(hit.kind, "found", `${token} must resolve`);
+		assert.equal(hit.kind === "found" && hit.session.path, source.path, `${token} must reach ${source.path}`);
+		return token;
+	};
+
 	const named = [backend, frontend];
-	for (const source of named) {
-		const hit = resolveReference(referenceToken(source, named).replace(/^#/, ""), named);
-		assert.equal(hit.kind, "found");
-		assert.equal(hit.kind === "found" && hit.session.path, source.path);
-	}
+	for (const source of named) roundTrip(source, named);
 
 	// Unnamed sessions emit the whole id, so the id branch must accept a dashed UUID.
 	const unnamedA = session({ id: "abcd1111-0000-4000-8000-000000000001", name: undefined, cwd: "/repo/a" });
 	const unnamedB = session({ id: "abcd2222-0000-4000-8000-000000000002", name: undefined, cwd: "/repo/b" });
 	const unnamedPair = [unnamedA, unnamedB];
-	for (const source of unnamedPair) {
-		const token = referenceToken(source, unnamedPair);
-		assert.equal(token, `#${source.id}`);
-		const hit = resolveReference(token.replace(/^#/, ""), unnamedPair);
-		assert.equal(hit.kind, "found");
-		assert.equal(hit.kind === "found" && hit.session.path, source.path);
-	}
+	for (const source of unnamedPair) roundTrip(source, unnamedPair, `#${source.id}`);
 
 	// Colliding names get the repo qualifier; each token must reach its own repo.
 	const collision = [backend, backendOld];
 	for (const source of collision) {
-		const token = referenceToken(source, collision);
-		assert.ok(token.includes("/"), `${token} should be repo-qualified`);
-		const hit = resolveReference(token.replace(/^#/, ""), collision);
-		assert.equal(hit.kind, "found");
-		assert.equal(hit.kind === "found" && hit.session.path, source.path);
+		assert.ok(roundTrip(source, collision).includes("/"), "a cross-repo collision should be repo-qualified");
 	}
+
+	// A repo basename with a space would emit `#My Projects/fix-auth`, which the extractor cuts to `My`.
+	const spaced = [
+		session({ id: "aaaa1111", name: "fix-auth", cwd: "/repo/My Projects", modifiedMs: 5000 }),
+		session({ id: "bbbb2222", name: "fix-auth", cwd: "/repo/other", modifiedMs: 4000 }),
+	];
+	for (const source of spaced) roundTrip(source, spaced);
+
+	// A name with a colon would emit `#feat:-auth`, which the extractor cuts to `feat`.
+	const colons = [
+		session({ id: "cccc3333", name: "feat: auth", cwd: "/repo/a", modifiedMs: 5000 }),
+		session({ id: "dddd4444", name: "feature notes", cwd: "/repo/b", modifiedMs: 4000 }),
+	];
+	for (const source of colons) roundTrip(source, colons);
+
+	// A hex-like name whose slug is another session's id prefix would hit the id branch first.
+	const hexLike = [
+		session({ id: "ffffffff-0000-4000-8000-000000000009", name: "cafe", cwd: "/repo/cafe", modifiedMs: 5000 }),
+		session({ id: "cafe2222-0000-4000-8000-000000000002", name: undefined, cwd: "/repo/other", modifiedMs: 4000 }),
+	];
+	for (const source of hexLike) roundTrip(source, hexLike);
+
+	// A plain name still gets the short token; the id fallback must not swallow the common case.
+	const plain = session({ id: "eeee5555", name: "plain-name", cwd: "/repo/plain", modifiedMs: 5000 });
+	roundTrip(plain, [plain], "#plain-name");
 });
 
 test("a same-repo slug collision falls back to the id instead of an ambiguous repo token", () => {
@@ -163,6 +187,12 @@ test("a short number resolves by name and never enters the id branch", () => {
 	const hit = resolveReference("42", [numericName]);
 	assert.equal(hit.kind, "found");
 	assert.equal(hit.kind === "found" && hit.session.path, numericName.path);
+});
+
+test("an all-digit token never falls through to the fuzzy name branch", () => {
+	const named = session({ id: "ffffffff", name: "fix-42-auth", cwd: "/repo/numeric" });
+	assert.deepEqual(resolveReference("42", [named]), { kind: "missing" });
+	assert.equal(resolveReference("4242", [named]).kind, "missing");
 });
 
 test("an empty or whitespace query returns missing instead of matching every name", () => {
