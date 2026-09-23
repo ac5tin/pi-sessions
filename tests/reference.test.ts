@@ -173,6 +173,28 @@ test("every referenceToken resolves back to its own session", () => {
 	// A plain name still gets the short token; the id fallback must not swallow the common case.
 	const plain = session({ id: "eeee5555", name: "plain-name", cwd: "/repo/plain", modifiedMs: 5000 });
 	roundTrip(plain, [plain], "#plain-name");
+
+	// A name that ends with a dot: the extractor strips trailing punctuation, so `#fix-auth.`
+	// is read back as `fix-auth` and would silently resolve to the OTHER session here.
+	const dotted = session({ id: "aaaa1111", name: "fix-auth.", cwd: "/repo/a", modifiedMs: 5000 });
+	const undotted = session({ id: "bbbb2222", name: "fix-auth", cwd: "/repo/b", modifiedMs: 4000 });
+	roundTrip(dotted, [dotted, undotted], `#${dotted.id}`);
+	roundTrip(undotted, [dotted, undotted], "#fix-auth");
+
+	// A dots-only name emits `#...`, which extracts to nothing at all.
+	const dotsOnly = session({ id: "cccc3333", name: "...", cwd: "/repo/c", modifiedMs: 5000 });
+	roundTrip(dotsOnly, [dotsOnly], `#${dotsOnly.id}`);
+
+	// The same defect behind a cross-repo qualifier: `#backend/fix-auth.` reads back as
+	// `backend/fix-auth`, which resolves to nobody.
+	const dottedBackend = session({ id: "dddd4444", name: "fix-auth.", cwd: "/repo/backend", modifiedMs: 5000 });
+	const dottedFrontend = session({ id: "eeee5555", name: "fix-auth", cwd: "/repo/frontend", modifiedMs: 4000 });
+	roundTrip(dottedBackend, [dottedBackend, dottedFrontend], `#${dottedBackend.id}`);
+
+	// A repo basename that ends with a dot follows the same rule.
+	const dottedRepo = session({ id: "ffff6666", name: "fix-auth", cwd: "/repo/team.", modifiedMs: 5000 });
+	const otherRepo = session({ id: "aaaa7777", name: "fix-auth", cwd: "/repo/other", modifiedMs: 4000 });
+	roundTrip(dottedRepo, [dottedRepo, otherRepo], `#${dottedRepo.id}`);
 });
 
 test("a same-repo slug collision falls back to the id instead of an ambiguous repo token", () => {

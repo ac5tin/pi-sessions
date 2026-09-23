@@ -96,14 +96,19 @@ export function referenceToken(session: IndexedSession, sessions: IndexedSession
 	if (!session.name) return `#${slug}`;
 
 	const repo = repoName(session.cwd);
-	// Three ways a short token would fail to reach THIS session: the extractor cannot read a
+	// Four ways a short token would fail to reach THIS session: the extractor cannot read a
 	// character outside its pattern (a space in the repo name, a colon in the name), the id
-	// branch answers first for another session whose id starts with the slug, or a same-repo
-	// collision makes the repo-qualified form ambiguous. The full id always resolves.
+	// branch answers first for another session whose id starts with the slug, a same-repo
+	// collision makes the repo-qualified form ambiguous, or the slug/repo ends with a dot and
+	// the extractor strips it. The full id always resolves.
 	const idTakesSlug =
 		ID_PREFIX_PATTERN.test(slug) &&
 		sessions.some((s) => s.path !== session.path && s.id.toLowerCase().startsWith(slug));
-	if (!TOKEN_SAFE.test(slug) || !TOKEN_SAFE.test(repo) || idTakesSlug) return `#${session.id}`;
+	// A trailing dot cannot be read back: `#fix-auth.` extracts as `fix-auth` and resolves to a
+	// DIFFERENT session, `#backend/fix-auth.` extracts as `backend/fix-auth` and resolves to
+	// nobody, and a dots-only name extracts to nothing.
+	const dotted = slug.endsWith(".") || repo.endsWith(".");
+	if (!TOKEN_SAFE.test(slug) || !TOKEN_SAFE.test(repo) || idTakesSlug || dotted) return `#${session.id}`;
 
 	const sameSlug = sessions.filter((s) => s.path !== session.path && s.name && slugify(s.name) === slug);
 	if (sameSlug.length === 0) return `#${slug}`;
