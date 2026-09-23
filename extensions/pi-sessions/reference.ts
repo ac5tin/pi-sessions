@@ -110,7 +110,10 @@ export function referenceToken(session: IndexedSession, sessions: IndexedSession
 	// A repo qualifier only disambiguates ACROSS repos. Two sessions in one repo sharing a name
 	// (a clone or fork keeps the name) would both emit #repo/slug, which resolves ambiguously,
 	// so fall back to the id — the id-prefix branch always resolves a unique id.
-	return sameSlug.some((s) => repoName(s.cwd) === repo)
+	// The emitted qualifier is lowercased, so the collision check must compare lowercased too:
+	// two repos whose basenames differ only in case would otherwise each emit the same
+	// `#backend/slug`, which resolves ambiguously.
+	return sameSlug.some((s) => repoName(s.cwd).toLowerCase() === repo.toLowerCase())
 		? `#${session.id}`
 		// The resolver lowercases the qualifier before comparing, so emit it lowercase.
 		: `#${repo.toLowerCase()}/${slug}`;

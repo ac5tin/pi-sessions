@@ -148,6 +148,14 @@ test("every referenceToken resolves back to its own session", () => {
 	const upperToken = referenceToken(upperRepo[0]!, upperRepo);
 	assert.ok(upperToken.startsWith("#backend/"), `uppercase repo should keep its qualifier: ${upperToken}`);
 
+	// Two repos whose basenames differ only in case are one repo for collision purposes: the
+	// lowercased qualifier reads back as the same repo, so both sides must fall back to the id.
+	const caseTwin = [
+		session({ id: "aaaa1111", name: "fix-auth", cwd: "/repo/Backend", modifiedMs: 5000 }),
+		session({ id: "bbbb2222", name: "fix-auth", cwd: "/repo/backend", modifiedMs: 4000 }),
+	];
+	for (const source of caseTwin) roundTrip(source, caseTwin, `#${source.id}`);
+
 	// A name with a colon would emit `#feat:-auth`, which the extractor cuts to `feat`.
 	const colons = [
 		session({ id: "cccc3333", name: "feat: auth", cwd: "/repo/a", modifiedMs: 5000 }),
