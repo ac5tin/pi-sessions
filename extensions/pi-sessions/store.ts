@@ -1,10 +1,15 @@
-import { readdir, readFile, realpath, stat } from "node:fs/promises";
+import { open, readdir, readFile, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Config } from "./config.ts";
 import type { IndexedSession } from "./types.ts";
 
-export const MAX_FILE_BYTES = 50 * 1024 * 1024;
+/**
+ * The real ceiling is V8: a JS string cannot exceed about 512 MB, so a bigger file cannot be
+ * read whole at all. Appends now cost only the new bytes, so the old 50 MB cap bought nothing;
+ * this stays as the guard against a readFile that cannot succeed.
+ */
+export const MAX_FILE_BYTES = 512 * 1024 * 1024;
 const MAX_FIRST_MESSAGE = 400;
 const SUBAGENT_NAME = /^subagent-/i;
 const SUBAGENT_TAGGED = /^[A-Za-z][\w-]*#[0-9a-f]{8}$/;
@@ -53,15 +58,45 @@ function tryParse(line: string): Record<string, unknown> | null {
 	}
 }
 
-export function parseSessionFile(
-	text: string,
-	path: string,
-	meta: { mtimeMs: number; size: number },
-): IndexedSession | null {
-	let header: { id?: unknown; cwd?: unknown } | null = null;
-	let name: string | undefined;
-	let firstUserMessage = "";
-	let messageCount = 0;
+/** Reads [start, end) as UTF-8 text. Returns null when the read fails. */
+async function readRange(path: string, start: number, end: number): Promise<string | null> {
+	const length = end - start;
+	if (length <= 0) return "";
+	const handle = await open(path, "r").catch(() => null);
+	if (handle === null) return null;
+	try {
+		const buffer = Buffer.alloc(length);
+		let offset = 0;
+		while (offset < length) {
+			const { bytesRead } = await handle.read(buffer, offset, length - offset, start + offset);
+			if (bytesRead === 0) break;
+			offset += bytesRead;
+		}
+		return buffer.toString("utf8", 0, offset);
+	} catch {
+		return null;
+	} finally {
+		await handle.close().catch(() => {});
+	}
+}
+
+/** The parse accumulates across calls so an appended file resumes instead of re-reading. */
+interface ParseState {
+	header: { id?: unknown; cwd?: unknown } | null;
+	name?: string;
+	firstUserMessage: string;
+	messageCount: number;
+}
+
+function createState(): ParseState {
+	return { header: null, firstUserMessage: "", messageCount: 0 };
+}
+
+/**
+ * Consumes every COMPLETE line in `text`. Returns the index just past the last complete line,
+ * so a partial trailing line (a session mid-append) is left for the next call.
+ */
+function consume(state: ParseState, text: string, maxFirstMessage: number): number {
 	let position = 0;
 
 	while (position < text.length) {
@@ -71,40 +106,55 @@ export function parseSessionFile(
 		position = end + 1;
 		if (!line) continue;
 
-		if (header === null) {
+		if (state.header === null) {
 			const parsed = tryParse(line);
-			if (!parsed || parsed.type !== "session" || typeof parsed.cwd !== "string") return null;
-			header = parsed as { id?: unknown; cwd?: unknown };
+			// A rejected file stops here: toEntry returns null and the caller drops the record.
+			if (!parsed || parsed.type !== "session" || typeof parsed.cwd !== "string") return position;
+			state.header = parsed as { id?: unknown; cwd?: unknown };
 			continue;
 		}
 
 		if (line.includes('"type":"message"')) {
 			if (line.includes('"role":"system"')) continue;
-			messageCount++;
-			if (!firstUserMessage && line.includes('"role":"user"')) {
+			state.messageCount++;
+			if (!state.firstUserMessage && line.includes('"role":"user"')) {
 				const entry = tryParse(line) as { message?: { role?: string; content?: unknown } } | null;
 				if (entry?.message?.role === "user") {
-					firstUserMessage = textOfContent(entry.message.content, MAX_FIRST_MESSAGE);
+					state.firstUserMessage = textOfContent(entry.message.content, maxFirstMessage);
 				}
 			}
 		} else if (line.includes('"type":"session_info"')) {
 			const entry = tryParse(line) as { name?: unknown } | null;
-			if (entry && typeof entry.name === "string" && entry.name.trim()) name = entry.name.trim();
+			if (entry && typeof entry.name === "string" && entry.name.trim()) state.name = entry.name.trim();
 		}
 	}
 
-	if (header === null) return null;
+	return position;
+}
+
+function toEntry(state: ParseState, path: string, meta: { mtimeMs: number; size: number }): IndexedSession | null {
+	if (state.header === null) return null;
 	return {
 		path,
-		id: typeof header.id === "string" ? header.id : "",
-		cwd: header.cwd as string,
-		name,
-		messageCount,
-		firstUserMessage,
+		id: typeof state.header.id === "string" ? state.header.id : "",
+		cwd: state.header.cwd as string,
+		name: state.name,
+		messageCount: state.messageCount,
+		firstUserMessage: state.firstUserMessage,
 		modifiedMs: meta.mtimeMs,
 		size: meta.size,
 		mtimeMs: meta.mtimeMs,
 	};
+}
+
+export function parseSessionFile(
+	text: string,
+	path: string,
+	meta: { mtimeMs: number; size: number },
+): IndexedSession | null {
+	const state = createState();
+	consume(state, text, MAX_FIRST_MESSAGE);
+	return toEntry(state, path, meta);
 }
 
 export interface RootFailure {
@@ -124,11 +174,29 @@ export interface StoreOptions {
 	maxFileBytes?: number;
 }
 
+/** One indexed file: the last entry plus what is needed to resume an append. */
+interface CachedSession {
+	mtimeMs: number;
+	size: number;
+	/** Byte offset just past the last complete line consumed from the file. */
+	parsedBytes: number;
+	state: ParseState;
+	entry: IndexedSession;
+}
+
+/**
+ * Turns the consumed text into a byte offset. The decoded string and the raw bytes agree for
+ * valid UTF-8, which is what pi writes: JSON.stringify escapes lone surrogates.
+ */
+function consumedBytes(text: string, consumed: number): number {
+	return Buffer.byteLength(text.slice(0, consumed), "utf8");
+}
+
 export class SessionStore {
 	readonly #root: string;
 	readonly #extraRoots: string[];
 	readonly #maxFileBytes: number;
-	#cache = new Map<string, { mtimeMs: number; size: number; entry: IndexedSession }>();
+	#cache = new Map<string, CachedSession>();
 	#rootReport: RootReport = { walked: 0, failed: [] };
 	#inflight: Promise<number> | null = null;
 	#refreshedAt = 0;
@@ -230,11 +298,40 @@ export class SessionStore {
 			}
 			const previous = this.#cache.get(file);
 			if (previous && previous.mtimeMs === meta.mtimeMs && previous.size === meta.size) continue;
+
+			// An appended file resumes from the last complete line: a live 20 MB session must not
+			// be re-read whole on every throttled dropdown refresh. A new file, a shrunken file,
+			// or an in-place rewrite (same size, new mtime) still takes the full parse below.
+			if (previous && meta.size > previous.size) {
+				const appended = await readRange(file, previous.parsedBytes, meta.size);
+				if (appended === null) continue; // a read failure keeps the previous entry
+				const consumed = consume(previous.state, appended, MAX_FIRST_MESSAGE);
+				previous.parsedBytes += consumedBytes(appended, consumed);
+				// Update the cached meta even when the new bytes end in a partial line, so that
+				// line is not re-read until more bytes arrive.
+				previous.mtimeMs = meta.mtimeMs;
+				previous.size = meta.size;
+				const entry = toEntry(previous.state, file, { mtimeMs: meta.mtimeMs, size: meta.size });
+				if (entry) {
+					previous.entry = entry;
+					parsed++;
+				}
+				continue;
+			}
+
 			const text = await readFile(file, "utf8").catch(() => null);
 			if (text === null) continue;
-			const entry = parseSessionFile(text, file, { mtimeMs: meta.mtimeMs, size: meta.size });
+			const state = createState();
+			const consumed = consume(state, text, MAX_FIRST_MESSAGE);
+			const entry = toEntry(state, file, { mtimeMs: meta.mtimeMs, size: meta.size });
 			if (entry) {
-				this.#cache.set(file, { mtimeMs: meta.mtimeMs, size: meta.size, entry });
+				this.#cache.set(file, {
+					mtimeMs: meta.mtimeMs,
+					size: meta.size,
+					parsedBytes: consumedBytes(text, consumed),
+					state,
+					entry,
+				});
 				parsed++;
 			} else {
 				this.#cache.delete(file);

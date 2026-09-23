@@ -67,6 +67,27 @@ test("refresh skips oversized files", async () => {
 	assert.equal(store.size, 0);
 });
 
+test("a session file larger than the old 52 MB cap is indexed", async () => {
+	const root = mkdtempSync(join(tmpdir(), "pi-sessions-big-"));
+	const projectDir = join(root, "--repo-big--");
+	mkdirSync(projectDir, { recursive: true });
+	const file = join(projectDir, "big.jsonl");
+	// ~60 MB in one line: the marker makes the parser try it, and the first byte makes
+	// JSON.parse fail immediately, so the read stays the only real cost.
+	writeFileSync(
+		file,
+		`{"type":"session","version":3,"id":"big1","cwd":"/repo/big"}\n{"type":"message"${"x".repeat(60 * 1024 * 1024)}\n`,
+	);
+	try {
+		const store = new SessionStore({ root });
+		await store.refresh();
+		assert.equal(store.size, 1, "a session over the old 52 MB cap must be indexed");
+		assert.equal(store.get(file)?.id, "big1");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
 test("refresh picks up an appended session on the next pass", async () => {
 	const root = mkdtempSync(join(tmpdir(), "pi-sessions-store-"));
 	const projectDir = join(root, "--repo-x--");
@@ -81,6 +102,55 @@ test("refresh picks up an appended session on the next pass", async () => {
 	const reparsed = await store.refresh();
 	assert.equal(reparsed, 1);
 	assert.equal(store.get(file)?.messageCount, 1);
+	rmSync(root, { recursive: true, force: true });
+});
+
+test("refresh resumes an appended session and updates its name and count", async () => {
+	const root = mkdtempSync(join(tmpdir(), "pi-sessions-resume-"));
+	const projectDir = join(root, "--repo-x--");
+	mkdirSync(projectDir, { recursive: true });
+	const file = join(projectDir, "live.jsonl");
+	writeFileSync(file, '{"type":"session","version":3,"id":"x1","cwd":"/repo/x"}\n');
+	const store = new SessionStore({ root });
+	await store.refresh();
+	assert.equal(store.get(file)?.name, undefined);
+	assert.equal(store.get(file)?.messageCount, 0);
+
+	// Exactly what a `/name` and a new turn append to a live session: both must arrive from
+	// the appended bytes alone, which is the case the user hit on a 276 MB session.
+	appendFileSync(file, '{"type":"session_info","id":"n1","parentId":null,"name":"renamed live"}\n');
+	appendFileSync(file, '{"type":"message","id":"a","parentId":"n1","message":{"role":"user","content":"hi"}}\n');
+	assert.equal(await store.refresh(), 1);
+	assert.equal(store.get(file)?.name, "renamed live");
+	assert.equal(store.get(file)?.messageCount, 1);
+	rmSync(root, { recursive: true, force: true });
+});
+
+test("a partial trailing line is counted only once, when it is complete", async () => {
+	const root = mkdtempSync(join(tmpdir(), "pi-sessions-partial-line-"));
+	const projectDir = join(root, "--repo-x--");
+	mkdirSync(projectDir, { recursive: true });
+	const file = join(projectDir, "live.jsonl");
+	writeFileSync(file, '{"type":"session","version":3,"id":"x1","cwd":"/repo/x"}\n');
+	const store = new SessionStore({ root });
+	await store.refresh();
+
+	// A session mid-append: the line has no newline yet and must not be counted.
+	const first = '{"type":"message","id":"a","parentId":null,"message":{"role":"user","content":"one"}}';
+	appendFileSync(file, first.slice(0, 25));
+	await store.refresh();
+	assert.equal(store.get(file)?.messageCount, 0, "a partial line must not be counted");
+
+	// The rest of the first line arrives together with a second complete line.
+	const second = '{"type":"message","id":"b","parentId":"a","message":{"role":"user","content":"two"}}';
+	appendFileSync(file, `${first.slice(25)}\n${second}\n`);
+	await store.refresh();
+	assert.equal(store.get(file)?.messageCount, 2, "the completed line is counted exactly once");
+
+	// A later append must resume past the completed line, not re-count it.
+	appendFileSync(file, '{"type":"message","id":"c","parentId":"b","message":{"role":"user","content":"three"}}\n');
+	await store.refresh();
+	assert.equal(store.get(file)?.messageCount, 3);
 	rmSync(root, { recursive: true, force: true });
 });
 
