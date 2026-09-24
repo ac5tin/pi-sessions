@@ -310,6 +310,40 @@ test("the reference renderer shows a header and keeps the framed body when expan
 	assert.ok(!summarySpoof.includes("evil"), summarySpoof);
 });
 
+test("the reference renderer names every framed session in the collapsed header", () => {
+	const h = harness();
+	register(h.pi);
+
+	const digestOf = (name: string) =>
+		buildDigest(
+			{
+				path: `/sessions/${name}.jsonl`,
+				id: "a1b2c3d4",
+				cwd: "/repo/backend",
+				name,
+				messageCount: 3,
+				firstUserMessage: name,
+				modifiedMs: 1000,
+				size: 100,
+				mtimeMs: 1000,
+			},
+			[{ role: "user", content: name }],
+			{ git: null, summary: null, summaryNote: null },
+			DEFAULT_CONFIG,
+			31_000,
+		);
+
+	const renderer = h.renderers.find((entry) => entry.customType === "pi-sessions-reference");
+	assert.ok(renderer);
+	const theme = { fg: (_color: string, text: string) => text };
+	const linesOf = (component: { render(width: number): string[] } | undefined) =>
+		(component?.render(500) ?? []).map((line) => line.trimEnd()).join("\n");
+
+	const content = `${digestOf("first-session")}\n\n${digestOf("second-session")}`;
+	const collapsed = linesOf(renderer.render({ content }, { expanded: false, outputPad: 0 }, theme));
+	assert.equal(collapsed, "↩ referenced sessions: first-session, second-session");
+});
+
 test("session_start registers one autocomplete provider", async () => {
 	const h = harness();
 	register(h.pi);

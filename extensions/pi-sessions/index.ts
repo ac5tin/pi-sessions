@@ -417,10 +417,29 @@ export default function (pi: ExtensionAPI): void {
 
 	pi.registerMessageRenderer(MESSAGE_TYPE, (message, options, theme) => {
 		const content = typeof message.content === "string" ? message.content : "";
-		// The digest header is the first line, and session text can forge a later line, so read that line only.
-		const headerLine = content.split("\n", 1)[0] ?? "";
-		const name = headerLine.match(/^<referenced-session name="([^"]+)"/)?.[1];
-		const header = theme.fg("accent", `↩ referenced sessions: ${name ?? "(none)"}`);
+		// One injected message can hold several digest frames. Name every frame, but walk the
+		// tags as a state machine: a line-start tag inside an open frame is forged session
+		// text, not a new frame, so only a tag seen while expecting an open counts.
+		type FrameEvent = { index: number; kind: "open" | "close"; name?: string };
+		const events: FrameEvent[] = [];
+		for (const open of content.matchAll(/^<referenced-session name="([^"]+)"/gm)) {
+			if (open[1] !== undefined) events.push({ index: open.index ?? 0, kind: "open", name: open[1] });
+		}
+		const closePattern = /<\/referenced-session>/g;
+		let closeMatch: RegExpExecArray | null;
+		while ((closeMatch = closePattern.exec(content)) !== null) events.push({ index: closeMatch.index, kind: "close" });
+		events.sort((a, b) => a.index - b.index);
+		const names: string[] = [];
+		let expectingOpen = true;
+		for (const event of events) {
+			if (event.kind === "open" && expectingOpen && event.name !== undefined) {
+				names.push(event.name);
+				expectingOpen = false;
+			} else if (event.kind === "close" && !expectingOpen) {
+				expectingOpen = true;
+			}
+		}
+		const header = theme.fg("accent", `↩ referenced sessions: ${names.length > 0 ? names.join(", ") : "(none)"}`);
 		if (!options.expanded) return new Text(header, options.outputPad, 0);
 		return new Text(`${header}\n${theme.fg("dim", content)}`, options.outputPad, 0);
 	});
