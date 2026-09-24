@@ -145,6 +145,7 @@ interface CtxOptions {
 interface ApiCtx {
 	ctx: ExtensionContext;
 	statuses: Array<[string, string | undefined]>;
+	widgets: Array<[string, string[] | undefined]>;
 	calls: Array<{ model: unknown; context: unknown; options: unknown }>;
 	providers: unknown[];
 	editor: { text: string };
@@ -153,6 +154,7 @@ interface ApiCtx {
 
 function apiCtx(options: CtxOptions = {}): ApiCtx {
 	const statuses: Array<[string, string | undefined]> = [];
+	const widgets: Array<[string, string[] | undefined]> = [];
 	const calls: ApiCtx["calls"] = [];
 	const providers: ApiCtx["providers"] = [];
 	const editor: ApiCtx["editor"] = { text: "" };
@@ -178,6 +180,9 @@ function apiCtx(options: CtxOptions = {}): ApiCtx {
 			setStatus: (key: string, text: string | undefined) => {
 				statuses.push([key, text]);
 			},
+			setWidget: (key: string, content: string[] | undefined) => {
+				widgets.push([key, content]);
+			},
 			addAutocompleteProvider: (factory: unknown) => {
 				providers.push(factory);
 			},
@@ -192,7 +197,7 @@ function apiCtx(options: CtxOptions = {}): ApiCtx {
 			},
 		},
 	};
-	return { ctx: ctx as unknown as ExtensionContext, statuses, calls, providers, editor, notifications };
+	return { ctx: ctx as unknown as ExtensionContext, statuses, widgets, calls, providers, editor, notifications };
 }
 
 function writeConfig(config: Record<string, unknown>): void {
@@ -767,19 +772,23 @@ test("shows a loading status before reference work and clears it on a missing re
 	const h = harness();
 	register(h.pi);
 	writeConfig({ summaryMode: "off" });
-	const { ctx, statuses } = apiCtx({ hasUI: true });
+	const { ctx, statuses, widgets } = apiCtx({ hasUI: true });
 	await h.emit("session_start", ctx);
 
 	const pending = h.prompt("Continue from #feature-db-orm", ctx);
 	assert.deepEqual(statuses[0], [STATUS_KEY, "pi-sessions: loading #feature-db-orm…"]);
+	assert.deepEqual(widgets[0], [STATUS_KEY, ["pi-sessions: loading #feature-db-orm…"]]);
 	const content = injected(await pending).content;
 	assert.ok(content.includes('<referenced-session name="feature-db-orm"'), content);
 	assert.deepEqual(statuses.at(-1), [STATUS_KEY, undefined]);
+	assert.deepEqual(widgets.at(-1), [STATUS_KEY, undefined]);
 
 	const missingPending = h.prompt("Continue from #no-such-session", ctx);
 	assert.deepEqual(statuses.at(-1), [STATUS_KEY, "pi-sessions: loading #no-such-session…"]);
+	assert.deepEqual(widgets.at(-1), [STATUS_KEY, ["pi-sessions: loading #no-such-session…"]]);
 	assert.equal(await missingPending, undefined);
 	assert.deepEqual(statuses.at(-1), [STATUS_KEY, undefined]);
+	assert.deepEqual(widgets.at(-1), [STATUS_KEY, undefined]);
 });
 
 test("a blocking summary resolves config.summaryModel and ships as the handoff", async () => {
@@ -789,7 +798,7 @@ test("a blocking summary resolves config.summaryModel and ships as the handoff",
 	await h.emit("session_start");
 
 	const picked = { provider: "picked", id: "handoff" };
-	const { ctx, statuses, calls } = apiCtx({
+	const { ctx, statuses, widgets, calls } = apiCtx({
 		hasUI: true,
 		model: { provider: "session", id: "default" },
 		models: [picked],
@@ -798,6 +807,9 @@ test("a blocking summary resolves config.summaryModel and ships as the handoff",
 	const content = injected(await h.prompt("Continue from #feature-db-orm", ctx)).content;
 
 	assert.ok(content.includes("Handoff: FAKE-HANDOFF"), content);
+	assert.deepEqual(widgets[0], [STATUS_KEY, ["pi-sessions: loading #feature-db-orm…"]]);
+	assert.deepEqual(widgets[1], [STATUS_KEY, ["summarizing feature-db-orm…"]]);
+	assert.deepEqual(widgets.at(-1), [STATUS_KEY, undefined]);
 	assert.deepEqual(calls[0]?.model, picked);
 	// pi-ai's opencode provider derives its routing header from sessionId; without it the API
 	// answers 400 and the message is empty, which degrades every blocking summary silently.
@@ -923,8 +935,9 @@ test("the /pi-sessions command applies a changed extraRoots", async () => {
 test("session_shutdown clears the status line", async () => {
 	const h = harness();
 	register(h.pi);
-	const { ctx, statuses } = apiCtx({ hasUI: true });
+	const { ctx, statuses, widgets } = apiCtx({ hasUI: true });
 	await h.emit("session_start", ctx);
 	await h.emit("session_shutdown", ctx);
 	assert.deepEqual(statuses.at(-1), [STATUS_KEY, undefined]);
+	assert.deepEqual(widgets.at(-1), [STATUS_KEY, undefined]);
 });

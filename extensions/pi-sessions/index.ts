@@ -16,6 +16,17 @@ import type { IndexedSession, SessionMessage } from "./types.ts";
 
 const MESSAGE_TYPE = "pi-sessions-reference";
 const STATUS_KEY = "pi-sessions";
+
+/**
+ * Footer status alone is a small third footer line, easy to miss while the
+ * blocking summary runs. Mirror the same text as a widget above the editor so
+ * the load is visible in the main view from the first await onward.
+ */
+function showLoading(ctx: ExtensionContext, text: string | undefined): void {
+	if (!ctx.hasUI) return;
+	ctx.ui.setStatus(STATUS_KEY, text);
+	ctx.ui.setWidget(STATUS_KEY, text === undefined ? undefined : [text], { placement: "aboveEditor" });
+}
 /**
  * How stale the session index may be before the dropdown or the tool refreshes it. Another
  * agent can rename or create a session at any moment, so a store built at session_start is
@@ -153,7 +164,7 @@ export default function (pi: ExtensionAPI): void {
 
 	pi.on("session_shutdown", async (_event, ctx) => {
 		currentCtx = undefined;
-		ctx.ui.setStatus(STATUS_KEY, undefined);
+		showLoading(ctx, undefined);
 	});
 
 	pi.registerTool(
@@ -173,14 +184,14 @@ export default function (pi: ExtensionAPI): void {
 		const refs = all.slice(0, config.maxReferences);
 		if (refs.length === 0) return;
 
-		if (ctx.hasUI) {
+		{
 			const labels = refs.map((ref) => `#${neutralizeAttribute(ref)}`).join(", ");
-			ctx.ui.setStatus(STATUS_KEY, `pi-sessions: loading ${labels}…`);
+			showLoading(ctx, `pi-sessions: loading ${labels}…`);
 		}
 		try {
 			await store.refresh();
 		} catch (error) {
-			if (ctx.hasUI) ctx.ui.setStatus(STATUS_KEY, undefined);
+			showLoading(ctx, undefined);
 			throw error;
 		}
 		// Resolve against every indexed session, never the filtered dropdown list:
@@ -241,13 +252,13 @@ export default function (pi: ExtensionAPI): void {
 		// digest that did resolve. A read failure does not: the user asked for a real session,
 		// so the note explaining what happened must reach them even on its own.
 		if (resolved.length === 0 && readFailures.length === 0) {
-			if (ctx.hasUI) ctx.ui.setStatus(STATUS_KEY, undefined);
+			showLoading(ctx, undefined);
 			return;
 		}
 
-		if (ctx.hasUI && config.summaryMode !== "off" && resolved.length > 0) {
+		if (config.summaryMode !== "off" && resolved.length > 0) {
 			const names = resolved.map((entry) => entry.session.name ?? entry.session.id).join(", ");
-			ctx.ui.setStatus(STATUS_KEY, `summarizing ${names}…`);
+			showLoading(ctx, `summarizing ${names}…`);
 		}
 
 		let blocks: string[] = [];
@@ -286,7 +297,7 @@ export default function (pi: ExtensionAPI): void {
 			});
 		} finally {
 			// Clear even if a digest builder throws: a stranded `summarizing …` is worse than a lost turn.
-			if (ctx.hasUI) ctx.ui.setStatus(STATUS_KEY, undefined);
+			showLoading(ctx, undefined);
 		}
 		if (notes.length > 0) blocks.push(notes.join("\n"));
 
