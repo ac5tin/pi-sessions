@@ -763,6 +763,25 @@ test("unresolved references produce notes only next to a resolved digest", async
 	);
 });
 
+test("shows a loading status before reference work and clears it on a missing reference", async () => {
+	const h = harness();
+	register(h.pi);
+	writeConfig({ summaryMode: "off" });
+	const { ctx, statuses } = apiCtx({ hasUI: true });
+	await h.emit("session_start", ctx);
+
+	const pending = h.prompt("Continue from #feature-db-orm", ctx);
+	assert.deepEqual(statuses[0], [STATUS_KEY, "pi-sessions: loading #feature-db-orm…"]);
+	const content = injected(await pending).content;
+	assert.ok(content.includes('<referenced-session name="feature-db-orm"'), content);
+	assert.deepEqual(statuses.at(-1), [STATUS_KEY, undefined]);
+
+	const missingPending = h.prompt("Continue from #no-such-session", ctx);
+	assert.deepEqual(statuses.at(-1), [STATUS_KEY, "pi-sessions: loading #no-such-session…"]);
+	assert.equal(await missingPending, undefined);
+	assert.deepEqual(statuses.at(-1), [STATUS_KEY, undefined]);
+});
+
 test("a blocking summary resolves config.summaryModel and ships as the handoff", async () => {
 	const h = harness();
 	register(h.pi);
@@ -786,7 +805,8 @@ test("a blocking summary resolves config.summaryModel and ships as the handoff",
 	const prompt = (calls[0]?.context as { messages?: Array<{ role: string; content: string }> })?.messages?.[0];
 	assert.equal(prompt?.role, "user");
 	assert.ok(prompt?.content.includes("Session transcript:"), prompt?.content);
-	assert.deepEqual(statuses[0], [STATUS_KEY, "summarizing feature-db-orm…"]);
+	assert.deepEqual(statuses[0], [STATUS_KEY, "pi-sessions: loading #feature-db-orm…"]);
+	assert.deepEqual(statuses[1], [STATUS_KEY, "summarizing feature-db-orm…"]);
 	assert.deepEqual(statuses.at(-1), [STATUS_KEY, undefined]);
 	assert.ok(
 		readdirSync(cacheRoot).some((entry) => entry.endsWith(".md")),

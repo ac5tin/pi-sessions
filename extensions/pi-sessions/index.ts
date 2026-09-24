@@ -173,7 +173,16 @@ export default function (pi: ExtensionAPI): void {
 		const refs = all.slice(0, config.maxReferences);
 		if (refs.length === 0) return;
 
-		await store.refresh();
+		if (ctx.hasUI) {
+			const labels = refs.map((ref) => `#${neutralizeAttribute(ref)}`).join(", ");
+			ctx.ui.setStatus(STATUS_KEY, `pi-sessions: loading ${labels}…`);
+		}
+		try {
+			await store.refresh();
+		} catch (error) {
+			if (ctx.hasUI) ctx.ui.setStatus(STATUS_KEY, undefined);
+			throw error;
+		}
 		// Resolve against every indexed session, never the filtered dropdown list:
 		// an explicit reference must still reach a hidden or unnamed session.
 		const indexed = store.all();
@@ -231,7 +240,15 @@ export default function (pi: ExtensionAPI): void {
 		// byte-identical. Notes for unknown or ambiguous tokens only ride along with a
 		// digest that did resolve. A read failure does not: the user asked for a real session,
 		// so the note explaining what happened must reach them even on its own.
-		if (resolved.length === 0 && readFailures.length === 0) return;
+		if (resolved.length === 0 && readFailures.length === 0) {
+			if (ctx.hasUI) ctx.ui.setStatus(STATUS_KEY, undefined);
+			return;
+		}
+
+		if (ctx.hasUI && config.summaryMode !== "off" && resolved.length > 0) {
+			const names = resolved.map((entry) => entry.session.name ?? entry.session.id).join(", ");
+			ctx.ui.setStatus(STATUS_KEY, `summarizing ${names}…`);
+		}
 
 		let blocks: string[] = [];
 		try {
@@ -243,7 +260,6 @@ export default function (pi: ExtensionAPI): void {
 					if (config.summaryMode === "off") {
 						return { session: entry.session, messages: entry.messages, result: null, git: await gitInfo };
 					}
-					if (ctx.hasUI) ctx.ui.setStatus(STATUS_KEY, `summarizing ${entry.session.name ?? entry.session.id}…`);
 					const [result, section] = await Promise.all([
 						summarizeWithModel(ctx, entry.session, entry.messages),
 						gitInfo,
