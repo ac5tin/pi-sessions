@@ -128,7 +128,7 @@ With `summaryMode: "blocking"` (the default), each resolved session's transcript
 current model, or to `summaryModel` when set, before the agent starts. The turn waits for
 these calls: with several references they run in parallel, each beside its git probe, and
 each is bounded by `summaryTimeoutMs` (default 120 s). A status line
-`summarizing <session>…` shows while it works. The answer is written to
+`summarising <session>…` shows while it works. The answer is written to
 `~/.pi/agent/pi-sessions-cache/`, keyed by session id, file size and mtime, and model,
 so a second reference to the same session is instant. `summaryTimeoutMs` (default 120 s)
 bounds the call; on a timeout or error the digest carries `Handoff unavailable: <reason>`

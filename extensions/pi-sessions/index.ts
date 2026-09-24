@@ -17,15 +17,42 @@ import type { IndexedSession, SessionMessage } from "./types.ts";
 const MESSAGE_TYPE = "pi-sessions-reference";
 const STATUS_KEY = "pi-sessions";
 
+/** Braille spinner frames, same style as the Working indicator. */
+const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+const SPINNER_MS = 80;
+let spinnerTimer: ReturnType<typeof setInterval> | undefined;
+
+function stopSpinner(): void {
+	if (spinnerTimer !== undefined) {
+		clearInterval(spinnerTimer);
+		spinnerTimer = undefined;
+	}
+}
+
 /**
  * Footer status alone is a small third footer line, easy to miss while the
- * blocking summary runs. Mirror the same text as a widget above the editor so
- * the load is visible in the main view from the first await onward.
+ * blocking summary runs. Mirror the same text as an animated widget above the
+ * editor so the load is visible in the main view from the first await onward.
+ * Every clear path funnels through here, so the timer cannot leak.
  */
 function showLoading(ctx: ExtensionContext, text: string | undefined): void {
 	if (!ctx.hasUI) return;
+	stopSpinner();
 	ctx.ui.setStatus(STATUS_KEY, text);
-	ctx.ui.setWidget(STATUS_KEY, text === undefined ? undefined : [text], { placement: "aboveEditor" });
+	if (text === undefined) {
+		ctx.ui.setWidget(STATUS_KEY, undefined, { placement: "aboveEditor" });
+		return;
+	}
+	let frame = 0;
+	const paint = (index: number): void => {
+		ctx.ui.setWidget(STATUS_KEY, [`${SPINNER_FRAMES[index]} ${text}`], { placement: "aboveEditor" });
+	};
+	paint(0);
+	spinnerTimer = setInterval(() => {
+		frame = (frame + 1) % SPINNER_FRAMES.length;
+		paint(frame);
+	}, SPINNER_MS);
+	if (typeof spinnerTimer.unref === "function") spinnerTimer.unref();
 }
 /**
  * How stale the session index may be before the dropdown or the tool refreshes it. Another
@@ -258,7 +285,7 @@ export default function (pi: ExtensionAPI): void {
 
 		if (config.summaryMode !== "off" && resolved.length > 0) {
 			const names = resolved.map((entry) => entry.session.name ?? entry.session.id).join(", ");
-			showLoading(ctx, `summarizing ${names}…`);
+			showLoading(ctx, `summarising ${names}…`);
 		}
 
 		let blocks: string[] = [];
@@ -296,7 +323,7 @@ export default function (pi: ExtensionAPI): void {
 				);
 			});
 		} finally {
-			// Clear even if a digest builder throws: a stranded `summarizing …` is worse than a lost turn.
+			// Clear even if a digest builder throws: a stranded `summarising …` is worse than a lost turn.
 			showLoading(ctx, undefined);
 		}
 		if (notes.length > 0) blocks.push(notes.join("\n"));

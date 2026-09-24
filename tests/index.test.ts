@@ -777,7 +777,7 @@ test("shows a loading status before reference work and clears it on a missing re
 
 	const pending = h.prompt("Continue from #feature-db-orm", ctx);
 	assert.deepEqual(statuses[0], [STATUS_KEY, "pi-sessions: loading #feature-db-orm…"]);
-	assert.deepEqual(widgets[0], [STATUS_KEY, ["pi-sessions: loading #feature-db-orm…"]]);
+	assert.deepEqual(widgets[0], [STATUS_KEY, ["⠋ pi-sessions: loading #feature-db-orm…"]]);
 	const content = injected(await pending).content;
 	assert.ok(content.includes('<referenced-session name="feature-db-orm"'), content);
 	assert.deepEqual(statuses.at(-1), [STATUS_KEY, undefined]);
@@ -785,7 +785,7 @@ test("shows a loading status before reference work and clears it on a missing re
 
 	const missingPending = h.prompt("Continue from #no-such-session", ctx);
 	assert.deepEqual(statuses.at(-1), [STATUS_KEY, "pi-sessions: loading #no-such-session…"]);
-	assert.deepEqual(widgets.at(-1), [STATUS_KEY, ["pi-sessions: loading #no-such-session…"]]);
+	assert.ok(widgets.at(-1)?.[1]?.[0]?.endsWith("pi-sessions: loading #no-such-session…"));
 	assert.equal(await missingPending, undefined);
 	assert.deepEqual(statuses.at(-1), [STATUS_KEY, undefined]);
 	assert.deepEqual(widgets.at(-1), [STATUS_KEY, undefined]);
@@ -807,8 +807,8 @@ test("a blocking summary resolves config.summaryModel and ships as the handoff",
 	const content = injected(await h.prompt("Continue from #feature-db-orm", ctx)).content;
 
 	assert.ok(content.includes("Handoff: FAKE-HANDOFF"), content);
-	assert.deepEqual(widgets[0], [STATUS_KEY, ["pi-sessions: loading #feature-db-orm…"]]);
-	assert.deepEqual(widgets[1], [STATUS_KEY, ["summarizing feature-db-orm…"]]);
+	assert.deepEqual(widgets[0], [STATUS_KEY, ["⠋ pi-sessions: loading #feature-db-orm…"]]);
+	assert.ok(widgets.some((entry) => entry[1]?.[0]?.endsWith("summarising feature-db-orm…")));
 	assert.deepEqual(widgets.at(-1), [STATUS_KEY, undefined]);
 	assert.deepEqual(calls[0]?.model, picked);
 	// pi-ai's opencode provider derives its routing header from sessionId; without it the API
@@ -818,7 +818,7 @@ test("a blocking summary resolves config.summaryModel and ships as the handoff",
 	assert.equal(prompt?.role, "user");
 	assert.ok(prompt?.content.includes("Session transcript:"), prompt?.content);
 	assert.deepEqual(statuses[0], [STATUS_KEY, "pi-sessions: loading #feature-db-orm…"]);
-	assert.deepEqual(statuses[1], [STATUS_KEY, "summarizing feature-db-orm…"]);
+	assert.deepEqual(statuses[1], [STATUS_KEY, "summarising feature-db-orm…"]);
 	assert.deepEqual(statuses.at(-1), [STATUS_KEY, undefined]);
 	assert.ok(
 		readdirSync(cacheRoot).some((entry) => entry.endsWith(".md")),

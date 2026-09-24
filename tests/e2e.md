@@ -120,7 +120,7 @@ trailing space when it lands at the end of the line.
 With `summaryMode` left at the default (`"blocking"`, so no `PI_SESSIONS_CONFIG` that
 sets it to `"off"`), reference a real session in another repo.
 
-Expect: a status line `summarizing …` while the model works, then a `Handoff:` line in
+Expect: a status line `summarising …` while the model works, then a `Handoff:` line in
 the injected block. Reference the same session again in a second prompt: the summary is
 served from `~/.pi/agent/pi-sessions-cache/` and the block appears without the status
 line.
